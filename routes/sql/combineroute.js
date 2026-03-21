@@ -15,7 +15,9 @@ const {
   getStockMovements,
   getStockAgingDashboard,
   getReportsAnalyticsDashboard,
-  getCompleteDashboard
+  getCompleteDashboard,
+  addStockItem,
+  getAllStatesDashboard,getStateDetailsDashboard,getBranchDetailsDashboard,getItemFullDetails
 } = require("../../controllers/sqlbase/combine/combinemanager");
 
 const auth = require("../../middleware/auth");
@@ -26,11 +28,11 @@ const checkRole = require("../../middleware/role");
 // MAIN DASHBOARD
 // =====================================
 
-// Full dashboard (cards + charts + clients)
+// Full dashboard (cards + charts + clients) ye ladger screen on combine ki h
 router.get(
   "/dashboard/complete",
   auth,
-  checkRole(["stock_manager","inventory_manager"]),
+  checkRole(["inventory_manager","super_inventory_manager"]),
   getCompleteDashboard
 );
 
@@ -39,7 +41,7 @@ router.get(
 router.get(
   "/dashboard/inventory",
   auth,
-  checkRole(["stock_manager","inventory_manager"]),
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
   getInventoryDashboard
 );
 
@@ -48,7 +50,7 @@ router.get(
 router.get(
   "/dashboard/charts",
   auth,
-  checkRole(["stock_manager","inventory_manager"]),
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
   getInventoryDashboardCharts
 );
 
@@ -57,7 +59,7 @@ router.get(
 router.get(
   "/dashboard/full",
   auth,
-  checkRole(["inventory_manager","stock_manager"]),
+  checkRole(["inventory_manager","stock_manager","super_inventory_manager"]),
   getFullInventoryDashboard
 );
 
@@ -67,7 +69,7 @@ router.get(
 router.get(
   "/dashboard/branches",
   auth,
-  checkRole(["inventory_manager","stock_manager"]),
+  checkRole(["inventory_manager","stock_manager","super_inventory_manager"]),
   getBranchOverview
 );
 
@@ -76,19 +78,17 @@ router.get(
 router.get(
   "/dashboard/branch/:branch",
   auth,
-  checkRole(["stock_manager","inventory_manager"]),
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
   getBranchDashboard
 );
 
 
-// =====================================
-// INVENTORY TABLE
-// =====================================
+
 
 router.get(
   "/inventory/table",
   auth,
-  checkRole(["stock_manager","inventory_manager"]),
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
   getInventoryTable
 );
 
@@ -97,7 +97,7 @@ router.get(
 router.get(
   "/inventory/purchase-sales-summary",
   auth,
-  checkRole(["stock_manager","inventory_manager"]),
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
   getPurchaseSalesSummary
 );
 
@@ -106,14 +106,11 @@ router.get(
 router.get(
   "/inventory/purchases",
   auth,
-  checkRole(["stock_manager","inventory_manager"]),
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
   getPurchaseItems
 );
 
 
-// =====================================
-// STOCK CONDITIONS
-// =====================================
 
 // Damaged stock
 router.get(
@@ -142,9 +139,6 @@ router.get(
 );
 
 
-// =====================================
-// ANALYTICS DASHBOARD
-// =====================================
 
 // Stock aging analytics dashboard
 router.get(
@@ -163,4 +157,15 @@ router.get(
   getReportsAnalyticsDashboard
 );
 
+router.post('/add-stock',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),addStockItem)
+router.get('/dashboard/states',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager"]), getAllStatesDashboard);
+router.get('/dashboard/state/:stateName',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),getStateDetailsDashboard);
+router.get('/dashboard/branch-id/:branchId',auth,checkRole(["inventory_manager","super_inventory_manager"]),getBranchDetailsDashboard);
+// router.get('/dashboard',)
+router.get(
+  "/dashboard/item/:branchId/:itemName",
+  auth,
+  checkRole(["super_inventory_manager","super_admin","super_stock_manager","inventory_manager"]),
+  getItemFullDetails
+);
 module.exports = router;
