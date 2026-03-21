@@ -61,7 +61,7 @@ router.get(
 router.get(
   "/admin-dashboard",
   auth,
-  checkRole(["admin"]),
+  checkRole(["admin",'super_admin']),
   admincontroller.getAdminDashboard
 );
 
@@ -71,4 +71,5 @@ router.get("/d/branch-overview",auth,checkRole(['super_admin']), admincontroller
 router.get("/d/locationbranch",auth,checkRole(['super_admin']),admincontroller.getLocationWiseSummary)// ye h location k hisab s 
 router.get('/d/report',auth,checkRole(['super_admin',"admin"]),admincontroller.getReportsAnalytics)
 router.get("/branch/:branchId/item/:stockId/dashboard",auth,checkRole(['super_admin',"admin"]),admincontroller.getItemDashboard)
+router.patch("/users/:id/toggle-status",auth,checkRole(['super_admin',"admin"]),admincontroller.toggleUserStatus);
 module.exports = router;
