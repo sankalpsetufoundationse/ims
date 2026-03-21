@@ -770,20 +770,12 @@ exports.getAllUsersForDashboard = async (req, res) => {
   try {
     const user = req.user;
 
-    console.log("USER:", user);
-
     let whereCondition = {};
 
-    // =========================
-    // 🔐 ROLE + BRANCH LOGIC (SAME AS DASHBOARD)
-    // =========================
-
+    // 🔐 ROLE + BRANCH LOGIC
     if (user.branches[0] !== "ALL") {
-      
       whereCondition.branch_id = user.branches;
     }
-
-
 
     const users = await User.findAll({
       where: whereCondition,
@@ -793,7 +785,9 @@ exports.getAllUsersForDashboard = async (req, res) => {
         "name",
         "email",
         "created_at",
-        "branch_id"
+        "branch_id",
+        "last_login",   // ✅ added
+        "is_active"     // ✅ added
       ],
 
       include: [
@@ -811,16 +805,14 @@ exports.getAllUsersForDashboard = async (req, res) => {
       order: [["created_at", "DESC"]]
     });
 
-    // =========================
     // 🎯 FORMAT RESPONSE
-    // =========================
-
     const result = users.map((u) => {
-      const aging =
-        Math.floor(
-          (Date.now() - new Date(u.created_at).getTime()) /
-          (1000 * 60 * 60 * 24)
-        );
+      const createdAt = new Date(u.created_at);
+
+      const aging = Math.floor(
+        (Date.now() - createdAt.getTime()) /
+        (1000 * 60 * 60 * 24)
+      );
 
       return {
         id: u.id,
@@ -828,7 +820,19 @@ exports.getAllUsersForDashboard = async (req, res) => {
         email: u.email,
         role: u.role?.name || null,
         branch: u.branch?.name || null,
-        aging
+        aging,
+
+        // ✅ NEW FIELDS
+        lastLogin: u.last_login || null,
+        isActive: u.is_active,
+
+        // optional readable format
+        lastLoginDaysAgo: u.last_login
+          ? Math.floor(
+              (Date.now() - new Date(u.last_login).getTime()) /
+              (1000 * 60 * 60 * 24)
+            )
+          : null
       };
     });
 
@@ -843,6 +847,30 @@ exports.getAllUsersForDashboard = async (req, res) => {
   }
 };
 
+exports.toggleUserStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = await User.findByPk(id);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // ✅ toggle
+    user.is_active = !user.is_active;
+
+    await user.save();
+
+    res.json({
+      message: `User ${user.is_active ? "Activated" : "Deactivated"} successfully`,
+      is_active: user.is_active
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
 
 exports.getBranchOverview = async (req, res) => {
   try {
