@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  phone     String?
+  password  String
+  role      Role     @default(USER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  stocks    Stock[]
+
+  @@map("users")
+}
+
+model Item {
+  id     Int     @id @default(autoincrement())
+  name   String
+  sku    String? @unique
+
+  stocks Stock[]
+}
+
+model Stock {
+  id        Int      @id @default(autoincrement())
+  branch    String
+  quantity  Int
+  rate      Float
+  value     Float
+
+  ownerId   Int
+  owner     User     @relation(fields: [ownerId], references: [id])
+
+  itemId    Int
+  item      Item     @relation(fields: [itemId], references: [id])
+
+  ownerType OwnerType @default(USER)
+  createdAt DateTime  @default(now())
+
+  @@map("stocks")
+}
+
+enum Role {
+  ADMIN
+  STOCK
+  SALES
+  PURCHASE
+  FINANCE
+  USER
+}
+
+enum OwnerType {
+  ADMIN
+  USER
+}
