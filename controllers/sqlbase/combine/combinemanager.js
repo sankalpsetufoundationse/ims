@@ -1,6 +1,7 @@
 const { QueryTypes, Op } = require("sequelize");
 const sequelize = require("../../../config/sqlcon");
 const Stock = require("../../../model/SQL_Model/stock.record")
+const { Branch } = require("../../../model/SQL_Model");
 
 // ============================
 // INVENTORY DASHBOARD
@@ -180,7 +181,45 @@ exports.getInventoryDashboardCharts = async (req, res) => {
 };
 
 
+exports.addStockItem = async (req, res) => {
+  try {
+    const {
+      item,
+      category,
+      hsn,
+      grn,
+      purchaseOrder,
+      quantity,
+      rate,
+    } = req.body;
 
+    const value = quantity * rate;
+
+    const newItem = await Stock.create({
+      item,
+      category,
+      hsn,
+      grn,
+      purchaseOrder,
+      quantity,
+      rate,
+      value,
+
+      branch_id: req.user.branch_id,
+      owner_id: req.user.id, // ✅ FIX HERE
+    });
+
+    res.status(201).json({
+      success: true,
+      data: newItem,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: err.message,
+    });
+  }
+};
 // ============================
 // BRANCH OVERVIEW
 // ============================
@@ -1290,129 +1329,106 @@ exports.getBranchLedger = async (req, res) => {
 
 exports.getCompleteDashboard = async (req, res) => {
   try {
-
+    const role = req.user?.role;
     const branchId = req.user?.branch_id;
+
+    const isSuper = role === "super_inventory_manager";
+
+    // ======================
+    // DYNAMIC FILTER
+    // ======================
+    let branchFilter = "";
+    let replacements = {};
+
+    if (!isSuper) {
+      branchFilter = "WHERE branch_id = :branchId";
+      replacements.branchId = branchId;
+    }
 
     // ======================
     // CARDS (STOCK SUMMARY)
     // ======================
     const cards = await sequelize.query(`
       SELECT 
-
       COALESCE(SUM(value),0)::DECIMAL(12,2) AS "totalStockValue",
 
-      COALESCE(SUM(
-        CASE 
-        WHEN status='GOOD'
-        THEN value ELSE 0 END
-      ),0)::DECIMAL(12,2) AS "totalGoodStock",
+      COALESCE(SUM(CASE WHEN status='GOOD' THEN value ELSE 0 END),0)::DECIMAL(12,2) AS "totalGoodStock",
 
-      COALESCE(SUM(
-        CASE 
-        WHEN status='REPAIRABLE'
-        THEN value ELSE 0 END
-      ),0)::DECIMAL(12,2) AS "repairableStock",
+      COALESCE(SUM(CASE WHEN status='REPAIRABLE' THEN value ELSE 0 END),0)::DECIMAL(12,2) AS "repairableStock",
 
-      COALESCE(SUM(
-        CASE 
-        WHEN status='DAMAGED'
-        THEN value ELSE 0 END
-      ),0)::DECIMAL(12,2) AS "damagedStock"
+      COALESCE(SUM(CASE WHEN status='DAMAGED' THEN value ELSE 0 END),0)::DECIMAL(12,2) AS "damagedStock"
 
       FROM stocks
-
-      WHERE branch_id = :branchId
-    `,{
-      replacements:{ branchId }
-    });
-
+      ${branchFilter}
+    `, { replacements });
 
     // ======================
     // MONTHLY CASHFLOW
     // ======================
     const monthlyCashflow = await sequelize.query(`
       SELECT 
-
       TO_CHAR(created_at,'Mon') AS month,
-
       COALESCE(SUM(value),0)::DECIMAL(12,2) AS amount
 
       FROM stocks
-
-      WHERE branch_id = :branchId
+      ${branchFilter}
 
       GROUP BY month, DATE_PART('month',created_at)
-
       ORDER BY DATE_PART('month',created_at)
-    `,{
-      replacements:{ branchId }
-    });
-
+    `, { replacements });
 
     // ======================
     // CATEGORY DISTRIBUTION
     // ======================
     const categoryDistribution = await sequelize.query(`
       SELECT 
-
       category,
-
       SUM(quantity)::INTEGER AS total
 
       FROM stocks
-
-      WHERE branch_id = :branchId
+      ${branchFilter}
 
       GROUP BY category
-
       ORDER BY total DESC
-    `,{
-      replacements:{ branchId }
-    });
-
+    `, { replacements });
 
     // ======================
     // CLIENT TABLE
     // ======================
-const clients = await sequelize.query(`
-SELECT
-c.id,
-c.client_code AS "clientCode",
-c.name AS "vendorName",
-c.email,
-c.phone,
-c.gst_number AS "gstNumber",
+    const clients = await sequelize.query(`
+      SELECT
+      c.id,
+      c.client_code AS "clientCode",
+      c.name AS "vendorName",
+      c.email,
+      c.phone,
+      c.gst_number AS "gstNumber",
 
-COALESCE(SUM(CASE WHEN l.type='SALE' THEN l.amount ELSE 0 END),0) AS "totalAmount",
+      COALESCE(SUM(CASE WHEN l.type='SALE' THEN l.amount ELSE 0 END),0) AS "totalAmount",
 
-COALESCE(
-SUM(CASE WHEN l.type='SALE' THEN l.amount ELSE 0 END) -
-SUM(CASE WHEN l.type='PAYMENT' THEN l.amount ELSE 0 END)
-,0) AS "pendingAmount"
+      COALESCE(
+        SUM(CASE WHEN l.type='SALE' THEN l.amount ELSE 0 END) -
+        SUM(CASE WHEN l.type='PAYMENT' THEN l.amount ELSE 0 END)
+      ,0) AS "pendingAmount"
 
-FROM clients c
+      FROM clients c
 
-LEFT JOIN client_ledger l
-ON l.client_id = c.id
-AND l.branch_id = :branchId
+      LEFT JOIN client_ledger l
+      ON l.client_id = c.id
+      ${isSuper ? "" : "AND l.branch_id = :branchId"}
 
-WHERE c.branch_id = :branchId
+      ${isSuper ? "" : "WHERE c.branch_id = :branchId"}
 
-GROUP BY c.id
-
-ORDER BY c."createdAt" DESC
-
-LIMIT 50
-`,{
-replacements:{ branchId }
-});
+      GROUP BY c.id
+      ORDER BY c."createdAt" DESC
+      LIMIT 50
+    `, { replacements });
 
     // ======================
-    // STOCK TABLE
+    // STOCK TABLE (OPTIONAL)
     // ======================
     const table = await sequelize.query(`
       SELECT 
-
       po_number AS "purchaseOrderNo",
       item AS "itemName",
       category AS "categories",
@@ -1428,37 +1444,774 @@ replacements:{ branchId }
       END AS status
 
       FROM stocks
-
-      WHERE branch_id = :branchId
+      ${branchFilter}
 
       ORDER BY created_at DESC
-
       LIMIT 50
-    `,{
-      replacements:{ branchId }
-    });
-
+    `, { replacements });
 
     // ======================
     // FINAL RESPONSE
     // ======================
     res.json({
-      success:true,
-      dashboard:{
+      success: true,
+      dashboard: {
         cards: cards[0][0],
         monthlyCashflow: monthlyCashflow[0],
         categoryDistribution: categoryDistribution[0],
-          clients: clients[0]
-        // table: table[0]
+        clients: clients[0],
+        table: table[0] // enable if needed
       }
     });
 
   } catch (error) {
-
     res.status(500).json({
-      success:false,
-      message:error.message
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+
+exports.getAllStatesDashboard = async (req, res) => {
+  try {
+    const role = req.user?.role;
+
+    const SUPER_ROLES = [
+      "super_stock_manager",
+      "super_inventory_manager"
+    ];
+
+    const isSuper = SUPER_ROLES.includes(role);
+
+    if (!isSuper) {
+      return res.status(403).json({
+        success: false,
+        message: "❌ Access Denied"
+      });
+    }
+
+    // =========================
+    // STATE SUMMARY (FIXED)
+    // =========================
+    const statesData = await sequelize.query(`
+      SELECT 
+        b.state,
+
+        COUNT(DISTINCT b.id) AS "totalBranches",
+
+        COALESCE(SUM(s.quantity),0) AS "totalStock",
+        COALESCE(SUM(s.value),0) AS "totalValue",
+
+        -- ✅ FIX: NO type column
+        COALESCE(SUM(s.quantity),0) AS "currentStock",
+
+        -- PURCHASE COUNT
+        COALESCE(SUM(
+          CASE WHEN l.type = 'PURCHASE' THEN 1 ELSE 0 END
+        ),0) AS "purchaseCount",
+
+        -- SALES COUNT
+        COALESCE(SUM(
+          CASE WHEN l.type = 'SALE' THEN 1 ELSE 0 END
+        ),0) AS "salesCount"
+
+      FROM branches b
+      LEFT JOIN stocks s ON s.branch_id = b.id
+      LEFT JOIN ledger l ON l.branch_id = b.id
+
+      GROUP BY b.state
+      ORDER BY "totalValue" DESC
+    `);
+
+    // =========================
+    // 📊 CHART DATA
+    // =========================
+    const chartData = statesData[0].map((s) => ({
+      label: s.state,
+      value: Number(s.totalValue)
+    }));
+
+    // =========================
+    // 🔝 TOP STATES
+    // =========================
+    const topStates = [...statesData[0]]
+      .sort((a, b) => Number(b.totalValue) - Number(a.totalValue))
+      .slice(0, 5);
+
+    // =========================
+    // 📈 SUMMARY (FIXED)
+    // =========================
+    const summary = await sequelize.query(`
+      SELECT 
+
+      COALESCE(SUM(value),0) AS "totalStockValue",
+
+      -- ✅ FIX
+      COALESCE(SUM(quantity),0) AS "currentStock",
+
+      COUNT(*) AS "totalItems"
+
+      FROM stocks
+    `);
+
+    return res.json({
+      success: true,
+      summary: summary[0][0],
+      states: statesData[0],
+      charts: {
+        stateValueChart: chartData
+      },
+      topStates
     });
 
+  } catch (err) {
+    console.error("ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+exports.getStateDetailsDashboard = async (req, res) => {
+  try {
+    const role = req.user?.role;
+
+    const SUPER_ROLES = [
+      "super_stock_manager",
+      "super_inventory_manager"
+    ];
+
+    if (!SUPER_ROLES.includes(role)) {
+      return res.status(403).json({
+        success: false,
+        message: "❌ Access Denied"
+      });
+    }
+
+    const { stateName } = req.params;
+
+    // =========================
+    // BRANCH SUMMARY (STATE FILTER)
+    // =========================
+    const branchData = await sequelize.query(`
+      SELECT 
+        b.id AS "branchId",
+        b.name AS "branchName",
+
+        COUNT(DISTINCT b.id) AS "totalBranches",
+
+        -- STOCK TABLE
+        COALESCE(SUM(s.quantity),0) AS "totalStock",
+        COALESCE(SUM(s.value),0) AS "totalValue",
+
+        -- CURRENT STOCK (simple)
+        COALESCE(SUM(s.quantity),0) AS "currentStock",
+
+        -- =========================
+        -- ✅ STOCK IN (PURCHASE)
+        -- =========================
+        COALESCE(SUM(
+          CASE 
+            WHEN l.type = 'PURCHASE' THEN l.quantity
+            ELSE 0
+          END
+        ),0) AS "stockIn",
+
+        -- =========================
+        -- ❌ STOCK OUT (SALE)
+        -- =========================
+        COALESCE(SUM(
+          CASE 
+            WHEN l.type = 'SALE' THEN l.quantity
+            ELSE 0
+          END
+        ),0) AS "stockOut",
+
+        -- COUNTS
+        COALESCE(SUM(
+          CASE WHEN l.type = 'PURCHASE' THEN 1 ELSE 0 END
+        ),0) AS "purchaseCount",
+
+        COALESCE(SUM(
+          CASE WHEN l.type = 'SALE' THEN 1 ELSE 0 END
+        ),0) AS "salesCount"
+
+      FROM branches b
+      LEFT JOIN stocks s ON s.branch_id = b.id
+      LEFT JOIN ledger l ON l.branch_id = b.id
+
+      WHERE b.state = :stateName
+
+      GROUP BY b.id
+      ORDER BY "totalValue" DESC
+    `, {
+      replacements: { stateName }
+    });
+
+    // =========================
+    // 📊 CHART DATA
+    // =========================
+    const chartData = branchData[0].map((b) => ({
+      label: b.branchName,
+      value: Number(b.totalValue)
+    }));
+
+    // =========================
+    // 🔝 TOP BRANCHES
+    // =========================
+    const topBranches = [...branchData[0]]
+      .sort((a, b) => Number(b.totalValue) - Number(a.totalValue))
+      .slice(0, 5);
+
+    // =========================
+    // 📈 SUMMARY (STATE LEVEL)
+    // =========================
+    const summary = await sequelize.query(`
+      SELECT 
+        COALESCE(SUM(s.value),0) AS "totalStockValue",
+        COALESCE(SUM(s.quantity),0) AS "currentStock",
+        COUNT(s.id) AS "totalItems",
+
+        -- STATE LEVEL IN
+        COALESCE(SUM(
+          CASE WHEN l.type = 'PURCHASE' THEN l.quantity ELSE 0 END
+        ),0) AS "stockIn",
+
+        -- STATE LEVEL OUT
+        COALESCE(SUM(
+          CASE WHEN l.type = 'SALE' THEN l.quantity ELSE 0 END
+        ),0) AS "stockOut"
+
+      FROM branches b
+      LEFT JOIN stocks s ON s.branch_id = b.id
+      LEFT JOIN ledger l ON l.branch_id = b.id
+
+      WHERE b.state = :stateName
+    `, {
+      replacements: { stateName }
+    });
+
+    // =========================
+    // FINAL RESPONSE
+    // =========================
+    return res.json({
+      success: true,
+      state: stateName,
+
+      summary: summary[0][0],
+
+      branches: branchData[0],
+
+      charts: {
+        branchValueChart: chartData
+      },
+
+      topBranches
+    });
+
+  } catch (err) {
+    console.error("ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+exports.getBranchDetailsDashboard = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const SUPER_ROLES = [
+      "super_inventory_manager",
+      "super_admin",
+      "super_stock_manager"
+    ];
+
+    const role = user?.role?.toLowerCase().trim();
+    const isSuper = SUPER_ROLES.includes(role);
+
+    const branchId = parseInt(req.params.branchId, 10);
+
+    if (Number.isNaN(branchId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid branchId"
+      });
+    }
+
+    // =========================
+    // ACCESS CONTROL
+    // =========================
+    if (!isSuper) {
+      const userBranches = (user.branches || []).map(b => Number(b));
+
+      if (
+        user.branches?.[0] !== "ALL" &&
+        !userBranches.includes(branchId)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "Access Denied"
+        });
+      }
+    }
+
+    // =========================
+    // BRANCH INFO
+    // =========================
+    const branchInfo = await Branch.findByPk(branchId, {
+      attributes: ["id", "name", "state"]
+    });
+
+    if (!branchInfo) {
+      return res.status(404).json({
+        success: false,
+        message: "Branch not found"
+      });
+    }
+
+    // =========================
+    // PARALLEL QUERIES 🚀
+    // =========================
+    const [
+      summary,
+      stockMovement,
+      categoryDistribution,
+      monthlyData,
+      clients,
+      topItems
+    ] = await Promise.all([
+
+      // =========================
+      // STOCK SUMMARY
+      // =========================
+      sequelize.query(`
+        SELECT 
+          COALESCE(SUM(value),0) AS "totalStockValue",
+          COALESCE(SUM(quantity),0) AS "currentStock",
+          COUNT(id) AS "totalItems"
+        FROM stocks
+        WHERE branch_id = :branchId
+      `, { replacements: { branchId } }),
+
+      // =========================
+      // STOCK MOVEMENT (FULL)
+      // =========================
+      sequelize.query(`
+        SELECT
+
+          -- STOCK IN
+          COALESCE(SUM(
+            CASE WHEN type IN ('PURCHASE','TRANSFER_IN') THEN quantity ELSE 0 END
+          ),0) AS "stockIn",
+
+          -- STOCK OUT
+          COALESCE(SUM(
+            CASE WHEN type IN ('SALE','TRANSFER_OUT','DAMAGE') THEN quantity ELSE 0 END
+          ),0) AS "stockOut",
+
+          -- PURCHASE STOCK
+          COALESCE(SUM(
+            CASE WHEN type = 'PURCHASE' THEN quantity ELSE 0 END
+          ),0) AS "purchaseStockQty",
+
+          COALESCE(SUM(
+            CASE WHEN type = 'PURCHASE' THEN total ELSE 0 END
+          ),0) AS "purchaseStockValue",
+
+          -- SALES STOCK
+          COALESCE(SUM(
+            CASE WHEN type = 'SALE' THEN quantity ELSE 0 END
+          ),0) AS "salesStockQty",
+
+          COALESCE(SUM(
+            CASE WHEN type = 'SALE' THEN total ELSE 0 END
+          ),0) AS "salesStockValue"
+
+        FROM ledger
+        WHERE branch_id = :branchId
+      `, { replacements: { branchId } }),
+
+      // =========================
+      // CATEGORY DISTRIBUTION
+      // =========================
+      sequelize.query(`
+        SELECT 
+          category,
+          SUM(quantity) AS total
+        FROM stocks
+        WHERE branch_id = :branchId
+        GROUP BY category
+        ORDER BY total DESC
+      `, { replacements: { branchId } }),
+
+      // =========================
+      // MONTHLY TREND
+      // =========================
+      sequelize.query(`
+        SELECT 
+          TO_CHAR(created_at,'Mon') AS month,
+          COALESCE(SUM(value),0) AS amount
+        FROM stocks
+        WHERE branch_id = :branchId
+        GROUP BY month, DATE_PART('month',created_at)
+        ORDER BY DATE_PART('month',created_at)
+      `, { replacements: { branchId } }),
+
+      // =========================
+      // CLIENT DATA (FIXED)
+      // =========================
+      sequelize.query(`
+        SELECT
+          c.id AS "clientId",
+          c.name AS "clientName",
+          c.phone,
+
+          COALESCE(SUM(
+            CASE WHEN l.type='SALE' THEN l.total ELSE 0 END
+          ),0) AS "totalSales",
+
+          COALESCE(SUM(
+            CASE WHEN cl.type='PAYMENT' THEN cl.amount ELSE 0 END
+          ),0) AS "totalPayment",
+
+          COALESCE(
+            SUM(CASE WHEN l.type='SALE' THEN l.total ELSE 0 END) -
+            SUM(CASE WHEN cl.type='PAYMENT' THEN cl.amount ELSE 0 END)
+          ,0) AS "pendingAmount"
+
+        FROM clients c
+
+        LEFT JOIN ledger l 
+          ON l.branch_id = c.branch_id
+
+        LEFT JOIN client_ledger cl 
+          ON cl.client_id = c.id
+
+        WHERE c.branch_id = :branchId
+
+        GROUP BY c.id
+        ORDER BY "totalSales" DESC
+        LIMIT 10
+      `, { replacements: { branchId } }),
+
+      // =========================
+      // TOP ITEMS
+      // =========================
+      sequelize.query(`
+        SELECT 
+          item,
+          SUM(quantity) AS "totalQty",
+          SUM(value) AS "totalValue"
+        FROM stocks
+        WHERE branch_id = :branchId
+        GROUP BY item
+        ORDER BY "totalValue" DESC
+        LIMIT 5
+      `, { replacements: { branchId } })
+
+    ]);
+
+    // =========================
+    // FINAL RESPONSE
+    // =========================
+    return res.json({
+      success: true,
+
+      branch: branchInfo,
+
+      summary: {
+        ...summary[0][0],
+
+        stockIn: stockMovement[0][0].stockIn,
+        stockOut: stockMovement[0][0].stockOut,
+
+        purchaseStockQty: stockMovement[0][0].purchaseStockQty,
+        purchaseStockValue: stockMovement[0][0].purchaseStockValue,
+
+        salesStockQty: stockMovement[0][0].salesStockQty,
+        salesStockValue: stockMovement[0][0].salesStockValue
+      },
+
+      charts: {
+        categoryDistribution: categoryDistribution[0],
+        monthlyTrend: monthlyData[0]
+      },
+
+      clients: clients[0],
+
+      topItems: topItems[0]
+    });
+
+  } catch (err) {
+    console.error("ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+exports.getItemBranchAnalytics = async (req, res) => {
+  try {
+    const { branchId, itemName } = req.params;
+
+    // 1️⃣ Total Stats
+    const totalStock =
+      (await Stock.sum("quantity", {
+        where: { branch_id: branchId, item: itemName }
+      })) || 0;
+
+    const totalValue =
+      (await Stock.sum("value", {
+        where: { branch_id: branchId, item: itemName }
+      })) || 0;
+
+    // 2️⃣ Aging Distribution
+    const agingChart = await Stock.findAll({
+      where: { branch_id: branchId, item: itemName },
+      attributes: [
+        "aging",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "qty"]
+      ],
+      group: ["aging"],
+      order: [["aging", "ASC"]],
+      raw: true
+    });
+
+    // 3️⃣ Monthly Movement (PostgreSQL Safe)
+    const monthlyTrend = await Stock.findAll({
+      where: { branch_id: branchId, item: itemName },
+      attributes: [
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "month"
+        ],
+        [sequelize.fn("SUM", sequelize.col("quantity")), "stock"]
+      ],
+      group: [
+        sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM")
+      ],
+      order: [
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "ASC"
+        ]
+      ],
+      raw: true
+    });
+
+    // 4️⃣ Status Distribution
+    const statusChart = await Stock.findAll({
+      where: { branch_id: branchId, item: itemName },
+      attributes: [
+        "status",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "qty"]
+      ],
+      group: ["status"],
+      raw: true
+    });
+
+    res.json({
+      branchId,
+      item: itemName,
+      stats: {
+        totalStock,
+        totalValue
+      },
+      charts: {
+        agingChart,
+        monthlyTrend,
+        statusChart
+      }
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.getItemFullDetails = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const SUPER_ROLES = [
+      "super_inventory_manager",
+      "super_admin",
+      "super_stock_manager"
+    ];
+
+    const role = user?.role?.toLowerCase().trim();
+
+    if (!SUPER_ROLES.includes(role)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access Denied"
+      });
+    }
+
+    const { branchId, itemName } = req.params;
+
+    // =========================
+    // BASIC STATS
+    // =========================
+    const [stats] = await Promise.all([
+      sequelize.query(`
+        SELECT 
+          COALESCE(SUM(quantity),0) AS "totalStock",
+          COALESCE(SUM(value),0) AS "totalValue",
+          COUNT(id) AS "entries"
+        FROM stocks
+        WHERE branch_id = :branchId
+        AND item = :itemName
+      `, {
+        replacements: { branchId, itemName }
+      })
+    ]);
+
+    // =========================
+    // STOCK MOVEMENT (LEDGER)
+    // =========================
+    const [movement] = await sequelize.query(`
+      SELECT
+
+        -- STOCK IN
+        COALESCE(SUM(
+          CASE WHEN type IN ('PURCHASE','TRANSFER_IN') THEN quantity ELSE 0 END
+        ),0) AS "stockIn",
+
+        -- STOCK OUT
+        COALESCE(SUM(
+          CASE WHEN type IN ('SALE','TRANSFER_OUT','DAMAGE') THEN quantity ELSE 0 END
+        ),0) AS "stockOut",
+
+        -- PURCHASE
+        COALESCE(SUM(
+          CASE WHEN type='PURCHASE' THEN quantity ELSE 0 END
+        ),0) AS "purchaseQty",
+
+        COALESCE(SUM(
+          CASE WHEN type='PURCHASE' THEN total ELSE 0 END
+        ),0) AS "purchaseValue",
+
+        -- SALES
+        COALESCE(SUM(
+          CASE WHEN type='SALE' THEN quantity ELSE 0 END
+        ),0) AS "salesQty",
+
+        COALESCE(SUM(
+          CASE WHEN type='SALE' THEN total ELSE 0 END
+        ),0) AS "salesValue"
+
+      FROM ledger
+      WHERE branch_id = :branchId
+    `, {
+      replacements: { branchId }
+    });
+
+    // =========================
+    // AGING DISTRIBUTION
+    // =========================
+    const agingChart = await sequelize.query(`
+      SELECT 
+        aging,
+        SUM(quantity) AS qty
+      FROM stocks
+      WHERE branch_id = :branchId
+      AND item = :itemName
+      GROUP BY aging
+      ORDER BY aging ASC
+    `, {
+      replacements: { branchId, itemName }
+    });
+
+    // =========================
+    // STATUS DISTRIBUTION
+    // =========================
+    const statusChart = await sequelize.query(`
+      SELECT 
+        status,
+        SUM(quantity) AS qty
+      FROM stocks
+      WHERE branch_id = :branchId
+      AND item = :itemName
+      GROUP BY status
+    `, {
+      replacements: { branchId, itemName }
+    });
+
+    // =========================
+    // MONTHLY TREND
+    // =========================
+    const monthlyTrend = await sequelize.query(`
+      SELECT 
+        TO_CHAR(created_at,'YYYY-MM') AS month,
+        SUM(quantity) AS qty,
+        SUM(value) AS value
+      FROM stocks
+      WHERE branch_id = :branchId
+      AND item = :itemName
+      GROUP BY month
+      ORDER BY month ASC
+    `, {
+      replacements: { branchId, itemName }
+    });
+
+    // =========================
+    // TOP BATCH / GRN (ADVANCED)
+    // =========================
+    const batchData = await sequelize.query(`
+      SELECT 
+        batch_no,
+        SUM(quantity) AS qty,
+        SUM(value) AS value
+      FROM stocks
+      WHERE branch_id = :branchId
+      AND item = :itemName
+      GROUP BY batch_no
+      ORDER BY value DESC
+      LIMIT 5
+    `, {
+      replacements: { branchId, itemName }
+    });
+
+    // =========================
+    // FINAL RESPONSE
+    // =========================
+    return res.json({
+      success: true,
+
+      item: itemName,
+      branchId,
+
+      stats: {
+        ...stats[0][0],
+
+        stockIn: movement[0].stockIn,
+        stockOut: movement[0].stockOut,
+
+        purchaseQty: movement[0].purchaseQty,
+        purchaseValue: movement[0].purchaseValue,
+
+        salesQty: movement[0].salesQty,
+        salesValue: movement[0].salesValue
+      },
+
+      charts: {
+        agingChart: agingChart[0],
+        statusChart: statusChart[0],
+        monthlyTrend: monthlyTrend[0]
+      },
+
+      batches: batchData[0]
+    });
+
+  } catch (err) {
+    console.error("ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
   }
 };
