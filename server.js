@@ -12,7 +12,7 @@ const { initDB } = require("./model/SQL_Model");
 const corsOptions = {
   origin: [
     "http://localhost:3000", // React local
-    "http://localhost:5173", // Vite local
+    "http://192.168.1.13:3000", // Vite local
     "https://inventorysystem-opal.vercel.app" // production frontend
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
