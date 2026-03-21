@@ -22,7 +22,7 @@ router.get(
 router.get(
   "/super-dashboard",
   auth,
-  checkRole(["super_admin"]),
+  checkRole(["super_admin","admin"]),
   admincontroller.getSuperAdminDashboard
 );
 
@@ -67,7 +67,7 @@ router.get(
 
 router.get('/brach/:branchId',auth,checkRole(['admin','super_admin']),admincontroller.getBranchAnalytics)
 router.get("/d/get-users", auth,checkRole(['admin','super_admin']),admincontroller.getAllUsersForDashboard);
-router.get("/d/branch-overview",auth,checkRole(['super_admin']), admincontroller.getBranchOverview);
+router.get("/d/branch-overview",auth,checkRole(['super_admin',"admin"]), admincontroller.getBranchOverview);
 router.get("/d/locationbranch",auth,checkRole(['super_admin']),admincontroller.getLocationWiseSummary)// ye h location k hisab s 
 router.get('/d/report',auth,checkRole(['super_admin',"admin"]),admincontroller.getReportsAnalytics)
 router.get("/branch/:branchId/item/:stockId/dashboard",auth,checkRole(['super_admin',"admin"]),admincontroller.getItemDashboard)
