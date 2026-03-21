@@ -1479,6 +1479,8 @@ exports.getAllStatesDashboard = async (req, res) => {
 
     const SUPER_ROLES = [
       "super_stock_manager",
+      "super_admin",
+      "super_sales_manager",
       "super_inventory_manager"
     ];
 
@@ -1578,7 +1580,9 @@ exports.getStateDetailsDashboard = async (req, res) => {
     const role = req.user?.role;
 
     const SUPER_ROLES = [
-      "super_stock_manager",
+    "super_stock_manager",
+      "super_admin",
+      "super_sales_manager",
       "super_inventory_manager"
     ];
 
@@ -1723,9 +1727,10 @@ exports.getBranchDetailsDashboard = async (req, res) => {
     const user = req.user;
 
     const SUPER_ROLES = [
-      "super_inventory_manager",
+      "super_stock_manager",
       "super_admin",
-      "super_stock_manager"
+      "super_sales_manager",
+      "super_inventory_manager"
     ];
 
     const role = user?.role?.toLowerCase().trim();
@@ -2037,9 +2042,10 @@ exports.getItemFullDetails = async (req, res) => {
     const user = req.user;
 
     const SUPER_ROLES = [
-      "super_inventory_manager",
+     "super_stock_manager",
       "super_admin",
-      "super_stock_manager"
+      "super_sales_manager",
+      "super_inventory_manager"
     ];
 
     const role = user?.role?.toLowerCase().trim();
