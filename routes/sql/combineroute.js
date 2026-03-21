@@ -158,14 +158,14 @@ router.get(
 );
 
 router.post('/add-stock',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),addStockItem)
-router.get('/dashboard/states',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager"]), getAllStatesDashboard);
-router.get('/dashboard/state/:stateName',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),getStateDetailsDashboard);
-router.get('/dashboard/branch-id/:branchId',auth,checkRole(["inventory_manager","super_inventory_manager"]),getBranchDetailsDashboard);
+router.get('/dashboard/states',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager","super_admin","super_sales_manager"]), getAllStatesDashboard);
+router.get('/dashboard/state/:stateName',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager","super_admin","super_sales_manager"]),getStateDetailsDashboard);
+router.get('/dashboard/branch-id/:branchId',auth,checkRole(["inventory_manager","super_inventory_manager","super_admin","super_sales_manager"]),getBranchDetailsDashboard);
 // router.get('/dashboard',)
 router.get(
   "/dashboard/item/:branchId/:itemName",
   auth,
-  checkRole(["super_inventory_manager","super_admin","super_stock_manager","inventory_manager"]),
+  checkRole(["super_inventory_manager","super_admin","super_stock_manager","inventory_manager","super_admin","super_sales_manager"]),
   getItemFullDetails
 );
 module.exports = router;
