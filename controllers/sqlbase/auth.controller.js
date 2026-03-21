@@ -71,11 +71,12 @@ exports.login = async (req, res) => {
       return res.status(401).json({ error: "User not found" });
     }
 
+    // ❌ inactive user block
     if (!user.is_active) {
       return res.status(403).json({ error: "Account not active" });
     }
 
-    // 🔐 PASSWORD CHECK (enable in production)
+    // 🔐 PASSWORD CHECK (ENABLE IN PROD)
     // const match = await bcrypt.compare(password, user.password);
     // if (!match) {
     //   return res.status(401).json({ error: "Invalid password" });
@@ -83,23 +84,26 @@ exports.login = async (req, res) => {
 
     const roleName = user.role?.name;
 
-   
-    const superRoles = ["super_admin", "super_stock", "super_sales_manager","super_sales_manager","super_inventory_manager"];
+    const superRoles = [
+      "super_admin",
+      "super_stock",
+      "super_sales_manager",
+      "super_inventory_manager"
+    ];
 
     let branchIds = [];
 
-   
+    // ✅ SUPER ROLE → ALL ACCESS
     if (superRoles.includes(roleName)) {
-      branchIds = ["ALL"]; 
+      branchIds = ["ALL"];
     } else {
-    
       try {
         const userBranches = await UserBranch.findAll({
           where: { user_id: user.id },
           attributes: ["branch_id"],
         });
 
-        branchIds = userBranches.map(b => b.branch_id);
+        branchIds = userBranches.map((b) => b.branch_id);
 
       } catch (err) {
         if (user.branch_id) {
@@ -107,7 +111,6 @@ exports.login = async (req, res) => {
         }
       }
 
-     
       if (!branchIds.length) {
         return res.status(403).json({
           error: "No branch assigned to user",
@@ -115,7 +118,12 @@ exports.login = async (req, res) => {
       }
     }
 
-   
+    // ✅ UPDATE LAST LOGIN
+    await user.update({
+      last_login: new Date()
+    });
+
+    // ✅ TOKEN
     const token = jwt.sign(
       {
         id: user.id,
@@ -134,6 +142,7 @@ exports.login = async (req, res) => {
         email: user.email,
         role: roleName,
         branches: branchIds,
+        lastLogin: user.last_login,   // 👈 optional return
       },
     });
 
@@ -142,4 +151,3 @@ exports.login = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
