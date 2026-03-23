@@ -3,6 +3,9 @@ const { Branch, User, Role, Stock, sequelize, Ledger,  ClientLedger,
   QuotationItem } = require("../../model/SQL_Model");
 const { Op } = require("sequelize");
 const StockMovement = require("../../model/SQL_Model/stockmovement");
+const bcrypt = require("bcryptjs");
+const { encryptPassword } = require("../../utils/crypto"); 
+const { decryptPassword } = require("../../utils/crypto");
 function getDateFilter(range) {
   const now = new Date();
 
@@ -48,7 +51,6 @@ exports.createBranch = async (req, res) => {
       });
     }
 
-    
     const exists = await Branch.findOne({
       where: {
         [Op.or]: [{ name }, { code }]
@@ -73,7 +75,6 @@ exports.createBranch = async (req, res) => {
       { transaction: t }
     );
 
-
     const roles = await Role.findAll();
 
     const roleMap = {};
@@ -81,7 +82,6 @@ exports.createBranch = async (req, res) => {
       roleMap[r.name] = r.id;
     });
 
-   
     const usersToCreate = [
       { role: "admin", prefix: "admin" },
       { role: "sales_manager", prefix: "sales" },
@@ -95,14 +95,18 @@ exports.createBranch = async (req, res) => {
         throw new Error(`${u.role} role not found in DB`);
       }
 
-      const password = generatePassword();
+      const plainPassword = generatePassword();
+      const hashedPassword = await bcrypt.hash(plainPassword, 10);
+      const encryptedPassword = encryptPassword(plainPassword);
+
       const email = `${u.prefix}_${code}@company.com`;
 
       const user = await User.create(
         {
           name: `${name} ${u.role}`,
           email,
-          password,
+          password: hashedPassword,        // 🔐 login
+          secure_password: encryptedPassword, // 👁️ super admin
           role_id: roleMap[u.role],
           branch_id: branch.id
         },
@@ -112,13 +116,12 @@ exports.createBranch = async (req, res) => {
       createdUsers.push({
         role: u.role,
         email,
-        password
+        password: plainPassword // 👈 ek baar show
       });
     }
 
     await t.commit();
 
-    
     res.status(201).json({
       message: "Branch + Users created successfully",
       branch,
@@ -127,6 +130,80 @@ exports.createBranch = async (req, res) => {
 
   } catch (err) {
     await t.rollback();
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.getBranchUsersWithPassword = async (req, res) => {
+  try {
+    // 🔐 only super admin
+    if (req.user.role !== "super_admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const users = await User.findAll({
+      include: [
+        {
+          model: Role,
+          as: "role",
+          attributes: ["name"]
+        }
+      ],
+      where: {
+        "$role.name$": [
+          "admin",
+          "sales_manager",
+          "inventory_manager"
+        ]
+      },
+      raw: true,
+      nest: true
+    });
+
+    const result = users.map(u => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: u.role.name,
+      branch_id: u.branch_id,
+      password: u.secure_password
+        ? decryptPassword(u.secure_password)
+        : null
+    }));
+
+    res.json(result);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.resetUserPassword = async (req, res) => {
+  try {
+    if (req.user.role !== "super_admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const { userId } = req.body;
+
+    const newPassword = generatePassword();
+    const hashed = await bcrypt.hash(newPassword, 10);
+    const encrypted = encryptPassword(newPassword);
+
+    await User.update(
+      {
+        password: hashed,
+        secure_password: encrypted
+      },
+      { where: { id: userId } }
+    );
+
+    res.json({
+      userId,
+      password: newPassword
+    });
+
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
@@ -146,7 +223,6 @@ exports.getAllBranches = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 exports.getGlobalDashboard = async (req, res) => {
   try {
     // ✅ FIXED ROLE CHECK
@@ -269,24 +345,36 @@ exports.getBranchDashboard = async (req, res) => {
   try {
     const user = req.user;
     const requestedBranchId = parseInt(req.params.branchId);
+
     console.log("USER:", user);
     console.log("REQUESTED:", requestedBranchId);
 
     // =========================
-    // 🔐 FINAL SECURITY CHECK
+    // 🔐 FINAL SECURITY CHECK (FIXED)
     // =========================
-    if (
-      user.branches[0] !== "ALL" &&
-      !user.branches.includes(requestedBranchId)
-    ) {
-      return res.status(403).json({ error: "❌ Access Denied - Wrong Branch" });
+    const isSuper = user.branches?.[0] === "ALL";
+
+    if (!isSuper) {
+      // 👇 agar branches array nahi hai to fallback
+      if (user.branches?.length) {
+        if (!user.branches.includes(requestedBranchId)) {
+          return res.status(403).json({ error: "❌ Access Denied - Wrong Branch" });
+        }
+      } else {
+        // 👇 most important fix (branch admin case)
+        if (user.branch_id !== requestedBranchId) {
+          return res.status(403).json({ error: "❌ Access Denied - Wrong Branch" });
+        }
+      }
     }
 
     // =========================
-    // 🔥 FORCE BRANCH (IMPORTANT)
+    // 🔥 FORCE BRANCH (SAFE)
     // =========================
-    const finalBranchId =
-      user.branches[0] === "ALL" ? requestedBranchId : user.branch_id;
+    const finalBranchId = isSuper
+      ? requestedBranchId
+      : (user.branch_id || requestedBranchId);
+
     console.log("FINAL BRANCH USED:", finalBranchId);
 
     // =========================
@@ -319,7 +407,6 @@ exports.getBranchDashboard = async (req, res) => {
     // CHARTS DATA
     // =========================
 
-    // --- Bar chart: Stock IN / OUT movement ---
     const stockMovement = await StockMovement.findAll({
       where: { branch_id: finalBranchId },
       attributes: [
@@ -354,7 +441,6 @@ exports.getBranchDashboard = async (req, res) => {
       stockOut: Number(d.stockOut),
     }));
 
-    // --- Line chart: Sales / Purchase trends ---
     const salesData = await Ledger.findAll({
       where: { branch_id: finalBranchId },
       attributes: [
@@ -389,7 +475,7 @@ exports.getBranchDashboard = async (req, res) => {
     // FINAL RESPONSE
     // =========================
     res.json({
-      branchUsed: finalBranchId, // debug info
+      branchUsed: finalBranchId,
       branchInfo: branch,
       stats: {
         totalStock,
@@ -404,6 +490,7 @@ exports.getBranchDashboard = async (req, res) => {
       stocks,
       users,
     });
+
   } catch (err) {
     console.error("ERROR:", err);
     res.status(500).json({ error: err.message });
@@ -702,7 +789,6 @@ exports.getSuperAdminDashboard = async (req, res) => {
 };
 
 
-
 exports.getBranchAnalytics = async (req, res) => {
   try {
     const { branchId } = req.params;
@@ -791,9 +877,27 @@ exports.getAllUsersForDashboard = async (req, res) => {
 
     let whereCondition = {};
 
+    // =========================
     // 🔐 ROLE + BRANCH LOGIC
-    if (user.branches[0] !== "ALL") {
-      whereCondition.branch_id = user.branches;
+    // =========================
+
+    // SUPER ADMIN → ALL USERS
+    if (user.role === "super_admin") {
+      whereCondition = {};
+    }
+
+    // ADMIN → ONLY THEIR BRANCH USERS
+    else if (user.role === "admin") {
+      whereCondition.branch_id = user.branch_id;
+    }
+
+    // OTHER USERS → EXISTING LOGIC
+    else {
+      if (user.branches[0] !== "ALL") {
+        whereCondition.branch_id = {
+          [Op.in]: user.branches
+        };
+      }
     }
 
     const users = await User.findAll({
@@ -805,8 +909,8 @@ exports.getAllUsersForDashboard = async (req, res) => {
         "email",
         "created_at",
         "branch_id",
-        "last_login",   // ✅ added
-        "is_active"     // ✅ added
+        "last_login",
+        "is_active"
       ],
 
       include: [
@@ -824,7 +928,6 @@ exports.getAllUsersForDashboard = async (req, res) => {
       order: [["created_at", "DESC"]]
     });
 
-    // 🎯 FORMAT RESPONSE
     const result = users.map((u) => {
       const createdAt = new Date(u.created_at);
 
@@ -840,18 +943,8 @@ exports.getAllUsersForDashboard = async (req, res) => {
         role: u.role?.name || null,
         branch: u.branch?.name || null,
         aging,
-
-        // ✅ NEW FIELDS
         lastLogin: u.last_login || null,
-        isActive: u.is_active,
-
-        // optional readable format
-        lastLoginDaysAgo: u.last_login
-          ? Math.floor(
-              (Date.now() - new Date(u.last_login).getTime()) /
-              (1000 * 60 * 60 * 24)
-            )
-          : null
+        isActive: u.is_active
       };
     });
 
@@ -865,7 +958,6 @@ exports.getAllUsersForDashboard = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 exports.toggleUserStatus = async (req, res) => {
   try {
     const { id } = req.params;
