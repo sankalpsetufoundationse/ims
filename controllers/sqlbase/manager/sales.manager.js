@@ -8,6 +8,7 @@ const {
   Ledger,
   sequelize
 } = require("../../../model/SQL_Model");
+const { Op } = require("sequelize");
 const pdf = require("html-pdf");
 const PDFDocument = require("pdfkit");
 const puppeteer = require("puppeteer");
@@ -148,25 +149,78 @@ exports.listClients = async (req, res) => {
   try {
     const { search = "", branch_id } = req.query;
 
-    const where = {};
-    if (branch_id) where.branch_id = branch_id;
+    const user = req.user;
 
+    // role name nikal
+    const roleName = user.role?.name || user.role;
+
+    let where = {};
+
+    // =========================
+    // 🔐 ROLE BASED FILTER
+    // =========================
+
+    // 👑 SUPER SALES MANAGER → ALL DATA
+    if (roleName !== "super_sales_manager") {
+      where.branch_id = user.branch_id;
+    }
+
+    // optional branch filter (only super)
+    if (branch_id && roleName === "super_sales_manager") {
+      where.branch_id = branch_id;
+    }
+
+    // =========================
+    // 🔍 SEARCH
+    // =========================
     if (search) {
       where[Op.or] = [
         { name: { [Op.iLike]: `%${search}%` } },
         { phone: { [Op.iLike]: `%${search}%` } },
-        { email: { [Op.iLike]: `%${search}%` } }
+        { email: { [Op.iLike]: `%${search}%` } },
+        { address: { [Op.iLike]: `%${search}%` } }
       ];
     }
 
+    // =========================
+    // 📦 FETCH DATA
+    // =========================
     const clients = await Client.findAll({
       where,
+      include: [
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["id", "name"]
+        }
+      ],
       order: [["createdAt", "DESC"]]
     });
 
-    res.json({ total: clients.length, clients });
+    // =========================
+    // 🧠 RESPONSE FORMAT
+    // =========================
+    const formatted = clients.map((c) => ({
+      id: c.id,
+      client_code: c.client_code,
+      name: c.name,
+      phone: c.phone,
+      email: c.email,
+      address: c.address,
+
+      branch_id: c.branch_id,
+      branch_name: c.branch?.name || null,
+
+      created_at: c.createdAt
+    }));
+
+    res.json({
+      total: formatted.length,
+      clients: formatted
+    });
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -840,11 +894,56 @@ exports.getClientLedgerDetails = async (req, res) => {
 exports.listQuotations = async (req, res) => {
   try {
 
-    const branchId = req.user?.branch_id; // agar branch based access hai
+    const user = req.user;
+    const role = user.role?.name || user.role;
+
+    // ✅ handle both branch_id + branches[]
+    const userBranches = user.branches?.length
+      ? user.branches
+      : user.branch_id
+      ? [user.branch_id]
+      : [];
+
+    let where = {};
+
+    // =========================
+    // 🔐 ROLE BASED FILTER
+    // =========================
+
+    if (role !== "super_sales_admin") {
+      if (!userBranches.length) {
+        return res.status(403).json({
+          error: "❌ No branch access"
+        });
+      }
+
+      where.branch_id = {
+        [Op.in]: userBranches
+      };
+    }
+
+    // =========================
+    // 🎯 QUERY FILTER (FIXED)
+    // =========================
+
+    const branchFilter = req.query.branch_id;
+
+    // ✅ IMPORTANT FIX: ignore "ALL"
+    if (
+      role === "super_sales_admin" &&
+      branchFilter &&
+      branchFilter !== "ALL" &&
+      !isNaN(branchFilter)
+    ) {
+      where.branch_id = Number(branchFilter);
+    }
+
+    // =========================
+    // 📦 FETCH DATA
+    // =========================
 
     const quotations = await Quotation.findAll({
-      where: branchId ? { branch_id: branchId } : {},
-
+      where,
       attributes: [
         "id",
         "quotation_no",
@@ -856,12 +955,11 @@ exports.listQuotations = async (req, res) => {
         "status",
         "createdAt"
       ],
-
       include: [
         {
           model: Client,
           as: "client",
-          attributes: ["id", "name", "phone", "email"]
+          attributes: ["id", "name", "phone", "email", "address"]
         },
         {
           model: Branch,
@@ -870,34 +968,87 @@ exports.listQuotations = async (req, res) => {
         },
         {
           model: QuotationItem,
-          as: "items",
-          attributes: [
-            "id",
-            "product_name",
-            "quantity",
-            "unit_price",
-            "cgst",
-            "sgst",
-            "amount"
-          ]
+          as: "items"
         }
       ],
-
       order: [["createdAt", "DESC"]]
     });
 
-    res.json({
+    // =========================
+    // 👑 SUPER ADMIN DASHBOARD
+    // =========================
+
+    if (role === "super_sales_admin") {
+
+      const grouped = {};
+
+      quotations.forEach((q) => {
+
+        // 🔥 state extract (jugaad)
+        let state = "Unknown";
+        if (q.client?.address) {
+          const parts = q.client.address.split(",");
+          state = parts[parts.length - 1]?.trim() || "Unknown";
+        }
+
+        // 🔥 city from branch (BEST)
+        const city = q.branch?.location || "Unknown";
+
+        const branchName = q.branch?.name || "Unknown";
+
+        // init
+        if (!grouped[state]) grouped[state] = {};
+        if (!grouped[state][city]) grouped[state][city] = {};
+        if (!grouped[state][city][branchName]) {
+          grouped[state][city][branchName] = {
+            total: 0,
+            amount: 0,
+            pending: 0,
+            approved: 0,
+            rejected: 0,
+            invoiced: 0,
+            quotations: []
+          };
+        }
+
+        const data = grouped[state][city][branchName];
+
+        // calculations
+        data.total += 1;
+        data.amount += Number(q.total_amount || 0);
+
+        if (q.status === "pending") data.pending++;
+        if (q.status === "approved") data.approved++;
+        if (q.status === "rejected") data.rejected++;
+        if (q.status === "invoiced") data.invoiced++;
+
+        data.quotations.push(q);
+      });
+
+      return res.json({
+        role: "super_sales_admin",
+        total: quotations.length,
+        data: grouped
+      });
+    }
+
+    // =========================
+    // 🏢 SALES MANAGER RESPONSE
+    // =========================
+
+    return res.json({
+      role: "sales_manager",
+      branch_ids: userBranches,
       total: quotations.length,
       quotations
     });
 
   } catch (err) {
-
+    console.error(err);
     res.status(500).json({
       success: false,
       error: err.message
     });
-
   }
 };
 
@@ -1194,8 +1345,16 @@ exports.getAdvancedSalesAnalytics = async (req, res) => {
 
 exports.getClientLedgerSummary = async (req, res) => {
   try {
-
     const branchId = req.user?.branch_id || null;
+    const role = req.user?.role || "";
+
+    const isSuperSales = role === "super_sales_manager";
+
+    const whereClause = isSuperSales
+      ? ""
+      : branchId
+      ? `WHERE c.branch_id = ${branchId}`
+      : "";
 
     const data = await sequelize.query(`
       SELECT 
@@ -1203,10 +1362,11 @@ exports.getClientLedgerSummary = async (req, res) => {
         c.name AS "companyName",
         c.email,
         c.phone,
+        c.branch_id AS "branchId",
+
         COALESCE(c.gst_number, 'N/A') AS "gstNumber",
 
         COUNT(q.id) AS "totalEntries",
-
         COALESCE(SUM(q.total_amount),0) AS "totalAmount",
 
         COALESCE(SUM(
@@ -1224,20 +1384,89 @@ exports.getClientLedgerSummary = async (req, res) => {
         ),0) AS "revenue"
 
       FROM clients c
+      LEFT JOIN quotations q ON q.client_id = c.id
 
-      LEFT JOIN quotations q 
-      ON q.client_id = c.id
-
-      ${branchId ? `WHERE c.branch_id = ${branchId}` : ""}
+      ${whereClause}
 
       GROUP BY c.id
-
-      ORDER BY "totalAmount" DESC
+      ORDER BY c.branch_id, "totalAmount" DESC
     `);
+
+    let clients = data[0];
+
+    // 🔥 ONLY for super_sales_manager → group by branch
+    if (isSuperSales) {
+      const grouped = {};
+
+      clients.forEach(client => {
+        const branch = client.branchId;
+
+        if (!grouped[branch]) {
+          grouped[branch] = {
+            branchId: branch,
+            totalClients: 0,
+            totalEntries: 0,
+            totalAmount: 0,
+            pendingAmount: 0,
+            revenue: 0,
+            clients: []
+          };
+        }
+
+        grouped[branch].clients.push(client);
+
+        // totals
+        grouped[branch].totalClients += 1;
+        grouped[branch].totalEntries += Number(client.totalEntries);
+        grouped[branch].totalAmount += Number(client.totalAmount);
+        grouped[branch].pendingAmount += Number(client.pendingAmount);
+        grouped[branch].revenue += Number(client.revenue);
+      });
+
+      clients = Object.values(grouped);
+    }
+
+    // 🔥 OLD branchSummary untouched (as you wanted)
+    let branchSummary = [];
+
+    if (isSuperSales) {
+      const branchData = await sequelize.query(`
+        SELECT 
+          c.branch_id AS "branchId",
+
+          COUNT(DISTINCT c.id) AS "totalClients",
+          COUNT(q.id) AS "totalEntries",
+
+          COALESCE(SUM(q.total_amount),0) AS "totalAmount",
+
+          COALESCE(SUM(
+            CASE 
+              WHEN q.status = 'pending' THEN q.total_amount 
+              ELSE 0 
+            END
+          ),0) AS "pendingAmount",
+
+          COALESCE(SUM(
+            CASE 
+              WHEN q.status = 'invoiced' THEN q.total_amount 
+              ELSE 0 
+            END
+          ),0) AS "revenue"
+
+        FROM clients c
+        LEFT JOIN quotations q ON q.client_id = c.id
+
+        GROUP BY c.branch_id
+        ORDER BY "totalAmount" DESC
+      `);
+
+      branchSummary = branchData[0];
+    }
 
     res.json({
       success: true,
-      clients: data[0]
+      clients, // 👈 same key, bas super me grouped aa raha
+      ...(isSuperSales && { branchSummary })
     });
 
   } catch (err) {
@@ -1311,21 +1540,31 @@ exports.getClientLedgerSummary = async (req, res) => {
 
 exports.getClientLedgerDetails = async (req, res) => {
   try {
-
     const { clientId } = req.params;
+
     const branchId = req.user?.branch_id || null;
+    const role = req.user?.role || "";
+
+    const isSuperSales = role === "super_sales_manager";
+
+    // 🔥 Branch filter (ONLY for non-super)
+    const branchFilter = isSuperSales
+      ? ""
+      : branchId
+      ? `AND q.branch_id = ${branchId}`
+      : "";
 
     const data = await sequelize.query(`
       SELECT 
         q.id AS "entryId",
         q.quotation_no AS "transactionId",
         c.name AS "client",
+        q.branch_id AS "branchId",
+
         TO_CHAR(q."createdAt", 'DD/MM/YYYY, HH24:MI:SS') AS "dateTime",
 
-        -- TOTAL AMOUNT
         COALESCE(q.total_amount,0) AS "amount",
 
-        -- RECEIVED (invoiced means received)
         COALESCE(
           CASE 
             WHEN q.status = 'invoiced' THEN q.total_amount
@@ -1333,7 +1572,6 @@ exports.getClientLedgerDetails = async (req, res) => {
           END
         ,0) AS "receivedAmount",
 
-        -- PENDING
         COALESCE(
           CASE 
             WHEN q.status != 'invoiced' THEN q.total_amount
@@ -1347,7 +1585,7 @@ exports.getClientLedgerDetails = async (req, res) => {
       ON c.id = q.client_id
 
       WHERE q.client_id = :clientId
-      ${branchId ? `AND q.branch_id = ${branchId}` : ""}
+      ${branchFilter}
 
       ORDER BY q."createdAt" DESC
     `, {
@@ -1357,7 +1595,7 @@ exports.getClientLedgerDetails = async (req, res) => {
     res.json({
       success: true,
       totalEntries: data[0].length,
-      ledger: data[0]
+      ledger: data[0] // 👈 same structure (no breaking change)
     });
 
   } catch (err) {
@@ -1372,12 +1610,19 @@ exports.getClientLedgerDetails = async (req, res) => {
 
 exports.getInvoiceDashboard = async (req, res) => {
   try {
-
     const branchId = req.user?.branch_id || null;
-    const whereClause = branchId ? `WHERE branch_id = ${branchId}` : "";
+    const role = req.user?.role || "";
+
+    const isSuperSales = role === "super_sales_manager";
+
+    const whereClause = isSuperSales
+      ? ""
+      : branchId
+      ? `WHERE branch_id = ${branchId}`
+      : "";
 
     // ===============================
-    // 1. TOP CARDS
+    // 1. TOP CARDS (UNCHANGED LOGIC)
     // ===============================
     const stats = await sequelize.query(`
       SELECT 
@@ -1402,45 +1647,194 @@ exports.getInvoiceDashboard = async (req, res) => {
     // ===============================
     // 2. INVOICE LIST
     // ===============================
-    const invoices = await sequelize.query(`
+    const invoicesData = await sequelize.query(`
       SELECT 
         q.id,
+        q.branch_id AS "branchId",
         q.quotation_no AS "invoiceNo",
         c.name AS client,
         q.total_amount AS amount,
         q.status,
 
         TO_CHAR(q."createdAt", 'DD/MM/YYYY, HH24:MI') AS date,
-
         q.reference_no AS "quotationRef"
 
       FROM quotations q
+      LEFT JOIN clients c ON c.id = q.client_id
 
-      LEFT JOIN clients c 
-      ON c.id = q.client_id
+      ${isSuperSales ? "" : branchId ? `WHERE q.branch_id = ${branchId}` : ""}
 
-      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
-
-      ORDER BY q."createdAt" DESC
-      LIMIT 20
+      ORDER BY q.branch_id, q."createdAt" DESC
+      LIMIT 50
     `);
+
+    let invoices = invoicesData[0];
+
+    // ===============================
+    // 🔥 SUPER → GROUP BY BRANCH
+    // ===============================
+    if (isSuperSales) {
+      const grouped = {};
+
+      invoices.forEach(inv => {
+        const branch = inv.branchId;
+
+        if (!grouped[branch]) {
+          grouped[branch] = {
+            branchId: branch,
+            totalInvoices: 0,
+            totalAmount: 0,
+            pending: 0,
+            invoiced: 0,
+            rejected: 0,
+            invoices: []
+          };
+        }
+
+        grouped[branch].invoices.push(inv);
+
+        // totals
+        grouped[branch].totalInvoices += 1;
+        grouped[branch].totalAmount += Number(inv.amount);
+
+        if (inv.status === "pending") grouped[branch].pending++;
+        if (inv.status === "invoiced") grouped[branch].invoiced++;
+        if (inv.status === "rejected") grouped[branch].rejected++;
+      });
+
+      invoices = Object.values(grouped);
+    }
 
     // ===============================
     // FINAL RESPONSE
     // ===============================
     res.json({
       success: true,
-
       stats: stats[0][0],
-
-      invoices: invoices[0]
-
+      invoices // 👈 same key, bas super me grouped
     });
 
   } catch (err) {
     console.error(err);
     res.status(500).json({
       success: false,
+      error: err.message
+    });
+  }
+};
+exports.getSuperAdminDashboard = async (req, res) => {
+  try {
+
+    const quotations = await Quotation.findAll({
+      attributes: [
+        "id",
+        "total_amount",
+        "status",
+        "createdAt"
+      ],
+      include: [
+        {
+          model: Client,
+          as: "client",
+          attributes: ["id", "name", "address"]
+        },
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["id", "name", "location"]
+        }
+      ]
+    });
+
+    // =========================
+    // 🧠 GROUPING
+    // =========================
+    const dashboard = {};
+
+    quotations.forEach((q) => {
+
+      // 🔥 extract state + city
+      let state = "Unknown";
+      let city = "Unknown";
+
+      if (q.client?.address) {
+        const parts = q.client.address.split(",");
+
+        state = parts[parts.length - 1]?.trim() || "Unknown";
+        city = parts[parts.length - 2]?.trim() || "Unknown";
+      }
+
+      const branchName = q.branch?.name || "Unknown";
+
+      // =========================
+      // INIT STRUCTURE
+      // =========================
+
+      if (!dashboard[state]) dashboard[state] = {};
+      if (!dashboard[state][city]) dashboard[state][city] = {};
+      if (!dashboard[state][city][branchName]) {
+        dashboard[state][city][branchName] = {
+          total_quotations: 0,
+          total_amount: 0,
+          pending: 0,
+          approved: 0,
+          rejected: 0,
+          invoiced: 0,
+          top_clients: {}
+        };
+      }
+
+      const branchData = dashboard[state][city][branchName];
+
+      // =========================
+      // COUNTING
+      // =========================
+      branchData.total_quotations += 1;
+      branchData.total_amount += q.total_amount || 0;
+
+      if (q.status === "pending") branchData.pending += 1;
+      if (q.status === "approved") branchData.approved += 1;
+      if (q.status === "rejected") branchData.rejected += 1;
+      if (q.status === "invoiced") branchData.invoiced += 1;
+
+      // =========================
+      // TOP CLIENTS
+      // =========================
+      const clientName = q.client?.name || "Unknown";
+
+      if (!branchData.top_clients[clientName]) {
+        branchData.top_clients[clientName] = 0;
+      }
+
+      branchData.top_clients[clientName] += 1;
+    });
+
+    // =========================
+    // 🔝 TOP CLIENT FORMAT
+    // =========================
+    Object.keys(dashboard).forEach((state) => {
+      Object.keys(dashboard[state]).forEach((city) => {
+        Object.keys(dashboard[state][city]).forEach((branch) => {
+
+          const clients = dashboard[state][city][branch].top_clients;
+
+          const sorted = Object.entries(clients)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5);
+
+          dashboard[state][city][branch].top_clients = sorted;
+        });
+      });
+    });
+
+    res.json({
+      success: true,
+      data: dashboard
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
       error: err.message
     });
   }
