@@ -14,12 +14,12 @@ router.post('/qt-gen',auth,checkRole(["sales_manager","admin"]),salemanager.crea
 router.post("/ledger/sale", auth, checkRole(["sales_manager","admin"]), salemanager.createSaleEntry);
 router.post("/ledger/payment", auth, checkRole(["sales_manager","admin","finance"]), salemanager.addClientPayment);
 
-router.get("/ledger/:clientId", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin"]), salemanager.getClientLedger);
+router.get("/ledger/:clientId", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin","super_sales_manager"]), salemanager.getClientLedger);
 router.post('/gt/:id',auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.convertQuotationToInvoice)
-router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin"]), salemanager.listQuotations);
+router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin","super_sales_manager"]), salemanager.listQuotations);
 // router.get("/getsales",auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.getClientLedger)
 // router.get("/client-ledger/:clientId", auth, checkRole(["sales_manager","admin"]), salemanager.getClientLedgerDetails);
-router.get('/report',auth, checkRole(["sales_manager","admin"]), salemanager.reportandanalysis)
+router.get('/report',auth, checkRole(["sales_manager","admin","super_sales_manager"]), salemanager.reportandanalysis)
 router.put("/approve/:id",auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.approveQuotation);
 router.get('/dashbord',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getAdvancedSalesAnalytics)
 
