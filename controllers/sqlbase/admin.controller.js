@@ -474,17 +474,43 @@ exports.getAdminDashboard = async (req, res) => {
 
 exports.getSuperAdminDashboard = async (req, res) => {
   try {
+    const user = req.user;
+
+    // =========================
+    // 🔑 ROLE CHECK
+    // =========================
+    const isSuperAdmin =
+      user.role === "super_admin" || user.branches?.[0] === "ALL";
+
+    // =========================
+    // 🔑 BRANCH FILTER
+    // =========================
+    let branchFilter = {};
+
+    if (!isSuperAdmin) {
+      branchFilter = {
+        branch_id: user.branch_id
+      };
+    }
+
     // =========================
     // 🔹 TOP STATS
     // =========================
-    const totalUsers = await User.count();
-    const totalBranches = await Branch.count();
-    const totalStock = (await Stock.sum("quantity")) || 0;
-    const totalStockValue = (await Stock.sum("value")) || 0;
+    const totalUsers = isSuperAdmin
+      ? await User.count()
+      : await User.count({ where: { branch_id: user.branch_id } });
+
+    const totalBranches = isSuperAdmin ? await Branch.count() : 1;
+
+    const totalStock =
+      (await Stock.sum("quantity", { where: branchFilter })) || 0;
+
+    const totalStockValue =
+      (await Stock.sum("value", { where: branchFilter })) || 0;
 
     const totalSales =
       (await Ledger.sum("total", {
-        where: { type: "SALE" }
+        where: { ...branchFilter, type: "SALE" }
       })) || 0;
 
     // =========================
@@ -495,7 +521,7 @@ exports.getSuperAdminDashboard = async (req, res) => {
         [sequelize.fn("DATE", sequelize.col("createdAt")), "date"],
         [sequelize.fn("SUM", sequelize.col("total")), "total"]
       ],
-      where: { type: "SALE" },
+      where: { ...branchFilter, type: "SALE" },
       group: [sequelize.fn("DATE", sequelize.col("createdAt"))],
       order: [[sequelize.fn("DATE", sequelize.col("createdAt")), "ASC"]],
       raw: true
@@ -506,7 +532,7 @@ exports.getSuperAdminDashboard = async (req, res) => {
         [sequelize.fn("DATE", sequelize.col("createdAt")), "date"],
         [sequelize.fn("SUM", sequelize.col("total")), "total"]
       ],
-      where: { type: "PURCHASE" },
+      where: { ...branchFilter, type: "PURCHASE" },
       group: [sequelize.fn("DATE", sequelize.col("createdAt"))],
       order: [[sequelize.fn("DATE", sequelize.col("createdAt")), "ASC"]],
       raw: true
@@ -520,6 +546,7 @@ exports.getSuperAdminDashboard = async (req, res) => {
         "category",
         [sequelize.fn("SUM", sequelize.col("quantity")), "total"]
       ],
+      where: branchFilter,
       group: ["category"],
       raw: true
     });
@@ -538,69 +565,72 @@ exports.getSuperAdminDashboard = async (req, res) => {
     }));
 
     // =========================
-    // 🔹 BRANCH OVERVIEW
+    // 🔹 BRANCH OVERVIEW (ONLY SUPER ADMIN)
     // =========================
-    const branches = await Branch.findAll({
-      attributes: [
-        "id",
-        "name",
-        [
-          sequelize.fn(
-            "COALESCE",
-            sequelize.fn("SUM", sequelize.col("stocks.quantity")),
-            0
-          ),
-          "stockItems"
+    let branchOverview = [];
+
+    if (isSuperAdmin) {
+      const branches = await Branch.findAll({
+        attributes: [
+          "id",
+          "name",
+          [
+            sequelize.fn(
+              "COALESCE",
+              sequelize.fn("SUM", sequelize.col("stocks.quantity")),
+              0
+            ),
+            "stockItems"
+          ],
+          [
+            sequelize.fn(
+              "COALESCE",
+              sequelize.fn("SUM", sequelize.col("stocks.value")),
+              0
+            ),
+            "purchase"
+          ]
         ],
-        [
-          sequelize.fn(
-            "COALESCE",
-            sequelize.fn("SUM", sequelize.col("stocks.value")),
-            0
-          ),
-          "purchase"
-        ]
-      ],
-      include: [
-        {
-          model: Stock,
-          as: "stocks",
-          attributes: []
-        }
-      ],
-      group: ["Branch.id"],
-      raw: true
-    });
+        include: [
+          {
+            model: Stock,
+            as: "stocks",
+            attributes: []
+          }
+        ],
+        group: ["Branch.id"],
+        raw: true
+      });
 
-    const branchOverview = branches.map((b) => ({
-      branchName: b.name,
-      stockItems: Number(b.stockItems),
-      purchase: Number(b.purchase),
-      sale: Math.floor(Number(b.purchase) * 0.4),
-      stockIn: Number(b.stockItems),
-      stockOut: Math.floor(Number(b.stockItems) * 0.3)
-    }));
+      branchOverview = branches.map((b) => ({
+        branchName: b.name,
+        stockItems: Number(b.stockItems),
+        purchase: Number(b.purchase),
+        sale: Math.floor(Number(b.purchase) * 0.4),
+        stockIn: Number(b.stockItems),
+        stockOut: Math.floor(Number(b.stockItems) * 0.3)
+      }));
+    }
 
     // =========================
-    // 🔹 RECENT ACTIVITIES (ADVANCED)
+    // 🔹 RECENT ACTIVITIES
     // =========================
-
-    // Ledger Activities
     const ledgerActivities = await Ledger.findAll({
+      where: branchFilter,
       limit: 5,
       order: [["createdAt", "DESC"]],
       raw: true
     });
 
-    // Latest User
     const userActivities = await User.findAll({
+      where: isSuperAdmin ? {} : { branch_id: user.branch_id },
       limit: 2,
       order: [["createdAt", "DESC"]],
       raw: true
     });
 
-    // Latest Stock Updates
     const stockActivities = await Stock.findAll({
+      where: branchFilter,
       limit: 2,
       order: [["updatedAt", "DESC"]],
       raw: true
@@ -608,7 +638,6 @@ exports.getSuperAdminDashboard = async (req, res) => {
 
     let activities = [];
 
-    // 👤 Users
     userActivities.forEach((u) => {
       activities.push({
         title: "User Registered",
@@ -619,7 +648,6 @@ exports.getSuperAdminDashboard = async (req, res) => {
       });
     });
 
-    // 📦 Stock
     stockActivities.forEach((s) => {
       activities.push({
         title: "Stock Updated",
@@ -630,28 +658,19 @@ exports.getSuperAdminDashboard = async (req, res) => {
       });
     });
 
-    // 💰 Ledger
     ledgerActivities.forEach((l) => {
-      if (l.type === "SALE") {
-        activities.push({
-          title: "Sales Transaction",
-          description: `Sale completed - ₹${l.total}`,
-          time: l.createdAt,
-          type: "sale",
-          icon: "dollar"
-        });
-      } else if (l.type === "PURCHASE") {
-        activities.push({
-          title: "Purchase Entry",
-          description: `Purchase added - ₹${l.total}`,
-          time: l.createdAt,
-          type: "purchase",
-          icon: "cart"
-        });
-      }
+      activities.push({
+        title:
+          l.type === "SALE"
+            ? "Sales Transaction"
+            : "Purchase Entry",
+        description: `₹${l.total}`,
+        time: l.createdAt,
+        type: l.type.toLowerCase(),
+        icon: l.type === "SALE" ? "dollar" : "cart"
+      });
     });
 
-    // 🔄 SORT & LIMIT
     const recentActivities = activities
       .sort((a, b) => new Date(b.time) - new Date(a.time))
       .slice(0, 5);
