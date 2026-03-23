@@ -1,75 +1,183 @@
 const express = require("express");
 const router = express.Router();
 
+const {
+  getInventoryDashboard,
+  getInventoryDashboardCharts,
+  getBranchOverview,
+  getBranchDashboard,
+  getFullInventoryDashboard,
+  getInventoryTable,
+  getPurchaseSalesSummary,
+  getPurchaseItems,
+  getDamageStock,
+  getAgingStock,
+  getStockMovements,
+  getStockAgingDashboard,
+  getReportsAnalyticsDashboard,
+  getCompleteDashboard,
+  addStockItem,
+  getAllStatesDashboard,getStateDetailsDashboard,getBranchDetailsDashboard,getItemFullDetails,getCityBranchDashboard
+} = require("../../controllers/sqlbase/combine/combinemanager");
+
 const auth = require("../../middleware/auth");
 const checkRole = require("../../middleware/role");
-const admincontroller = require("../../controllers/sqlbase/admin.controller");
 
 
-router.post("/create-branch",auth,checkRole(["super_admin"]),
-  admincontroller.createBranch
-);
+// =====================================
+// MAIN DASHBOARD
+// =====================================
 
-// Get All Branches
+// Full dashboard (cards + charts + clients) ye ladger screen on combine ki h
 router.get(
-  "/branches",
+  "/dashboard/complete",
   auth,
-  checkRole(["super_admin"]),
-  admincontroller.getAllBranches
+  checkRole(["inventory_manager","super_inventory_manager"]),
+  getCompleteDashboard
 );
 
-// Super Admin Global Dashboard
+
+// Inventory dashboard
 router.get(
-  "/super-dashboard",
+  "/dashboard/inventory",
   auth,
-  checkRole(["super_admin","admin"]),
-  admincontroller.getSuperAdminDashboard
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
+  getInventoryDashboard
 );
 
-// Global Location Summary Dashboard
+
+// Dashboard charts
 router.get(
-  "/global-dashboard",
+  "/dashboard/charts",
   auth,
-  checkRole(["super_admin"]),
-  admincontroller.getGlobalDashboard
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
+  getInventoryDashboardCharts
+);
+
+
+// Full inventory dashboard (all branches)
+router.get(
+  "/dashboard/full",
+  auth,
+  checkRole(["inventory_manager","stock_manager","super_inventory_manager"]),
+  getFullInventoryDashboard
+);
+
+
+
+// Branch overview (all branches)
+router.get(
+  "/dashboard/branches",
+  auth,
+  checkRole(["inventory_manager","stock_manager","super_inventory_manager"]),
+  getBranchOverview
+);
+
+
+// Single branch dashboard
+router.get(
+  "/dashboard/branch/:branch",
+  auth,
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
+  getBranchDashboard
 );
 
 
 
 
 router.get(
-  "/location/:location",
+  "/inventory/table",
   auth,
-  checkRole(["super_admin", "admin"]),
-  admincontroller.getLocationDashboard
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
+  getInventoryTable
 );
-
 
 
 
 router.get(
-  "/branch/:branchId",
+  "/inventory/purchase-sales-summary",
   auth,
-  checkRole(["super_admin", "admin"]),
-  admincontroller.getBranchDashboard
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
+  getPurchaseSalesSummary
 );
 
 
-
-
-
+// Purchase items list
 router.get(
-  "/admin-dashboard",
+  "/inventory/purchases",
   auth,
-  checkRole(["admin",'super_admin']),
-  admincontroller.getAdminDashboard
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
+  getPurchaseItems
 );
 
-router.get('/brach/:branchId',auth,checkRole(['admin','super_admin']),admincontroller.getBranchAnalytics)
-router.get("/d/get-users", auth,checkRole(['admin','super_admin']),admincontroller.getAllUsersForDashboard);
-router.get("/d/branch-overview",auth,checkRole(['super_admin',"admin"]), admincontroller.getBranchOverview);
-router.get("/d/locationbranch",auth,checkRole(['super_admin']),admincontroller.getLocationWiseSummary)// ye h location k hisab s 
-router.get('/d/report',auth,checkRole(['super_admin',"admin"]),admincontroller.getReportsAnalytics)
-router.get("/branch/:branchId/item/:stockId/dashboard",auth,checkRole(['super_admin',"admin"]),admincontroller.getItemDashboard)
-router.patch("/users/:id/toggle-status",auth,checkRole(['super_admin',"admin"]),admincontroller.toggleUserStatus);
+
+
+// Damaged stock
+router.get(
+  "/inventory/damaged",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getDamageStock
+);
+
+
+// Aging stock
+router.get(
+  "/inventory/aging",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getAgingStock
+);
+
+
+// Stock movement history
+router.get(
+  "/inventory/movements",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getStockMovements
+);
+
+
+
+// Stock aging analytics dashboard
+router.get(
+  "/dashboard/aging",
+  auth,
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
+  getStockAgingDashboard
+);
+
+
+// Reports & analytics dashboard
+router.get(
+  "/dashboard/reports",
+  auth,
+  checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),
+  getReportsAnalyticsDashboard
+);
+
+router.post('/add-stock',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),addStockItem)
+router.get('/dashboard/states',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager","super_admin","admin"]), getAllStatesDashboard);
+router.get('/dashboard/state/:stateName',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager","super_admin","admin"]),getStateDetailsDashboard);
+router.get('/dashboard/branch-id/:branchId',auth,checkRole(["inventory_manager","super_inventory_manager","super_admin","admin"]),getBranchDetailsDashboard);
+// router.get('/dashboard',)
+router.get(
+  "/dashboard/item/:branchId/:itemName",
+  auth,
+  checkRole(["super_inventory_manager","super_admin","super_stock_manager","inventory_manager","super_admin","admin"]),
+  getItemFullDetails
+);
+router.get(
+  "/dashboard/state/:stateName/city/:cityName/branches",
+  auth,
+  checkRole([
+    "super_stock_manager",
+    "super_admin",
+    "super_sales_manager",
+    "super_inventory_manager",
+    "admin"
+  ]),
+  getCityBranchDashboard
+);
 module.exports = router;
