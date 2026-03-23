@@ -17,7 +17,7 @@ const {
   getReportsAnalyticsDashboard,
   getCompleteDashboard,
   addStockItem,
-  getAllStatesDashboard,getStateDetailsDashboard,getBranchDetailsDashboard,getItemFullDetails
+  getAllStatesDashboard,getStateDetailsDashboard,getBranchDetailsDashboard,getItemFullDetails,getCityBranchDashboard
 } = require("../../controllers/sqlbase/combine/combinemanager");
 
 const auth = require("../../middleware/auth");
@@ -158,14 +158,26 @@ router.get(
 );
 
 router.post('/add-stock',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager"]),addStockItem)
-router.get('/dashboard/states',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager","super_admin","super_sales_manager"]), getAllStatesDashboard);
-router.get('/dashboard/state/:stateName',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager","super_admin","super_sales_manager"]),getStateDetailsDashboard);
-router.get('/dashboard/branch-id/:branchId',auth,checkRole(["inventory_manager","super_inventory_manager","super_admin","super_sales_manager"]),getBranchDetailsDashboard);
+router.get('/dashboard/states',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager","super_admin"]), getAllStatesDashboard);
+router.get('/dashboard/state/:stateName',auth,checkRole(["stock_manager","inventory_manager","super_inventory_manager","super_admin","admin"]),getStateDetailsDashboard);
+router.get('/dashboard/branch-id/:branchId',auth,checkRole(["inventory_manager","super_inventory_manager","super_admin","admin"]),getBranchDetailsDashboard);
 // router.get('/dashboard',)
 router.get(
   "/dashboard/item/:branchId/:itemName",
   auth,
-  checkRole(["super_inventory_manager","super_admin","super_stock_manager","inventory_manager","super_admin","super_sales_manager"]),
+  checkRole(["super_inventory_manager","super_admin","super_stock_manager","inventory_manager","super_admin"]),
   getItemFullDetails
+);
+router.get(
+  "/dashboard/state/:stateName/city/:cityName/branches",
+  auth,
+  checkRole([
+    "super_stock_manager",
+    "super_admin",
+    "super_sales_manager",
+    "super_inventory_manager",
+    "admin"
+  ]),
+  getCityBranchDashboard
 );
 module.exports = router;
