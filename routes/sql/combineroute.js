@@ -165,7 +165,7 @@ router.get('/dashboard/branch-id/:branchId',auth,checkRole(["inventory_manager",
 router.get(
   "/dashboard/item/:branchId/:itemName",
   auth,
-  checkRole(["super_inventory_manager","super_admin","super_stock_manager","inventory_manager","super_admin"]),
+  checkRole(["super_inventory_manager","super_admin","super_stock_manager","inventory_manager","super_admin","admim"]),
   getItemFullDetails
 );
 router.get(
