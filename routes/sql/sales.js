@@ -19,7 +19,7 @@ router.post('/gt/:id',auth,checkRole(["sales_manager","admin","super_admin"]),sa
 router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin","super_sales_manager"]), salemanager.listQuotations);
 // router.get("/getsales",auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.getClientLedger)
 // router.get("/client-ledger/:clientId", auth, checkRole(["sales_manager","admin"]), salemanager.getClientLedgerDetails);
-router.get('/report',auth, checkRole(["sales_manager","admin","super_sales_manager"]), salemanager.reportandanalysis)
+router.get('/report-all',auth, checkRole(["sales_manager","admin","super_sales_manager"]), salemanager.reportandanalysis)
 router.put("/approve/:id",auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.approveQuotation);
 router.get('/dashbord',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getAdvancedSalesAnalytics)
 
@@ -28,4 +28,21 @@ router.get('/get-ladger',auth,checkRole(["sales_manager","super_admin", "super_s
 //Ladger-screen-entries
 router.get('/get-ladger/:clientId',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getClientLedgerDetails)
 router.get('/get-invoice',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getInvoiceDashboard)
+router.get(
+  "/state/:state",
+  auth,
+  checkRole(["admin","sales_manager","super_sales_manager"]),
+  salemanager.getBranchesByState
+);
+router.get(
+  "/state",
+  auth,
+  checkRole(["admin","sales_manager","super_sales_manager"]),
+  salemanager.getStateWiseSales
+);
+router.get('/getstate',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getAllStatesDashboard)
+router.get('/getstate/:state',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getStateDashboard)
+router.get('/branch/:branchId',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getBranchDashboard)
+router.get('/dashboard/item/:itemId',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getItemDashboard )
+
 module.exports=router;
