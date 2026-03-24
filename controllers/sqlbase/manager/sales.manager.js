@@ -8,6 +8,7 @@ const {
   Ledger,
   sequelize
 } = require("../../../model/SQL_Model");
+const { QueryTypes } = require("sequelize")
 const { Op } = require("sequelize");
 const pdf = require("html-pdf");
 const PDFDocument = require("pdfkit");
@@ -594,41 +595,85 @@ exports.approveQuotation = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1️⃣ Fetch quotation by ID
+    const role = req.user?.role?.name || req.user?.role || "";
+    const userBranches = Array.isArray(req.user?.branches) && req.user.branches.length
+      ? req.user.branches.map(Number).filter((b) => !isNaN(b))
+      : req.user?.branch_id
+      ? [Number(req.user.branch_id)].filter((b) => !isNaN(b))
+      : [];
+
+    // 1. fetch quotation with branch
     const quotation = await Quotation.findByPk(id);
 
     if (!quotation) {
-      return res.status(404).json({ error: "Quotation not found" });
+      return res.status(404).json({
+        success: false,
+        error: "Quotation not found"
+      });
     }
 
-    // 2️⃣ Optional: Only certain roles can approve
-    const allowedRoles = ["super_admin", "super_sales_manager"];
-    if (!allowedRoles.includes(req.user.role)) {
-      return res
-        .status(403)
-        .json({ message: "Access denied: Insufficient role" });
+    // 2. allowed roles
+    const allowedRoles = [
+      "super_admin",
+      "super_sales_manager",
+      "super_sales_admin",
+      "sales_manager"
+    ];
+
+    if (!allowedRoles.includes(role)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied: Insufficient role"
+      });
     }
 
-    // 3️⃣ Check if already approved
+    // 3. sales_manager can approve only own branch quotation
+    if (role === "sales_manager") {
+      if (!userBranches.length) {
+        return res.status(403).json({
+          success: false,
+          message: "No branch access"
+        });
+      }
+
+      if (!userBranches.includes(Number(quotation.branch_id))) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied: You can approve only your branch quotations"
+        });
+      }
+    }
+
+    // 4. already approved
     if (quotation.status === "approved") {
-      return res
-        .status(400)
-        .json({ message: "Quotation is already approved" });
+      return res.status(400).json({
+        success: false,
+        message: "Quotation is already approved"
+      });
     }
 
-    // 4️⃣ Update status
+    // optional: prevent rejected/invoiced approval
+    if (quotation.status === "invoiced") {
+      return res.status(400).json({
+        success: false,
+        message: "Invoiced quotation cannot be approved again"
+      });
+    }
+
     quotation.status = "approved";
     await quotation.save();
 
-    // 5️⃣ Respond with updated data
-    res.status(200).json({
+    return res.status(200).json({
+      success: true,
       message: "Quotation approved successfully",
-      quotation,
+      quotation
     });
-
   } catch (err) {
     console.error("APPROVE QUOTATION ERROR:", err);
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Server error"
+    });
   }
 };
 exports.generateQuotationPDF = async (req, res) => {
@@ -891,29 +936,58 @@ exports.getClientLedgerDetails = async (req, res) => {
 };
 
 
+
 exports.listQuotations = async (req, res) => {
   try {
-
     const user = req.user;
-    const role = user.role?.name || user.role;
+    const role = user.role?.name || user.role || "";
 
-    // ✅ handle both branch_id + branches[]
-    const userBranches = user.branches?.length
-      ? user.branches
+    // super role support
+    const isSuperSales =
+      role === "super_sales_manager" || role === "super_sales_admin";
+
+    // normalize branch access
+    const userBranches = Array.isArray(user.branches) && user.branches.length
+      ? user.branches.map(Number).filter((id) => !isNaN(id))
       : user.branch_id
-      ? [user.branch_id]
+      ? [Number(user.branch_id)].filter((id) => !isNaN(id))
       : [];
 
     let where = {};
 
     // =========================
-    // 🔐 ROLE BASED FILTER
+    // QUERY PARAM SANITIZE
     // =========================
+    const rawBranchFilter = req.query.branch_id;
+    const normalizedBranchFilter =
+      rawBranchFilter &&
+      String(rawBranchFilter).trim() !== "" &&
+      String(rawBranchFilter).trim().toUpperCase() !== "ALL"
+        ? Number(rawBranchFilter)
+        : null;
 
-    if (role !== "super_sales_admin") {
+    // =========================
+    // ROLE BASED FILTER
+    // =========================
+    if (isSuperSales) {
+      // super sales can see all branches
+      // and can optionally filter one branch
+      if (normalizedBranchFilter !== null) {
+        if (isNaN(normalizedBranchFilter)) {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid branch_id. Use numeric branch_id or ALL"
+          });
+        }
+
+        where.branch_id = normalizedBranchFilter;
+      }
+    } else {
+      // normal sales / branch user -> only own branch
       if (!userBranches.length) {
         return res.status(403).json({
-          error: "❌ No branch access"
+          success: false,
+          error: "No branch access"
         });
       }
 
@@ -923,25 +997,8 @@ exports.listQuotations = async (req, res) => {
     }
 
     // =========================
-    // 🎯 QUERY FILTER (FIXED)
+    // FETCH DATA
     // =========================
-
-    const branchFilter = req.query.branch_id;
-
-    // ✅ IMPORTANT FIX: ignore "ALL"
-    if (
-      role === "super_sales_admin" &&
-      branchFilter &&
-      branchFilter !== "ALL" &&
-      !isNaN(branchFilter)
-    ) {
-      where.branch_id = Number(branchFilter);
-    }
-
-    // =========================
-    // 📦 FETCH DATA
-    // =========================
-
     const quotations = await Quotation.findAll({
       where,
       attributes: [
@@ -952,6 +1009,7 @@ exports.listQuotations = async (req, res) => {
         "total_amount",
         "gst_amount",
         "valid_till",
+        "reference_no",
         "status",
         "createdAt"
       ],
@@ -975,32 +1033,21 @@ exports.listQuotations = async (req, res) => {
     });
 
     // =========================
-    // 👑 SUPER ADMIN DASHBOARD
+    // SUPER SALES RESPONSE
     // =========================
-
-    if (role === "super_sales_admin") {
-
+    if (isSuperSales) {
       const grouped = {};
 
       quotations.forEach((q) => {
-
-        // 🔥 state extract (jugaad)
-        let state = "Unknown";
-        if (q.client?.address) {
-          const parts = q.client.address.split(",");
-          state = parts[parts.length - 1]?.trim() || "Unknown";
-        }
-
-        // 🔥 city from branch (BEST)
-        const city = q.branch?.location || "Unknown";
-
+        const branchId = q.branch_id || 0;
         const branchName = q.branch?.name || "Unknown";
+        const branchLocation = q.branch?.location || "Unknown";
 
-        // init
-        if (!grouped[state]) grouped[state] = {};
-        if (!grouped[state][city]) grouped[state][city] = {};
-        if (!grouped[state][city][branchName]) {
-          grouped[state][city][branchName] = {
+        if (!grouped[branchId]) {
+          grouped[branchId] = {
+            branchId,
+            branchName,
+            branchLocation,
             total: 0,
             amount: 0,
             pending: 0,
@@ -1011,82 +1058,127 @@ exports.listQuotations = async (req, res) => {
           };
         }
 
-        const data = grouped[state][city][branchName];
+        const data = grouped[branchId];
 
-        // calculations
         data.total += 1;
         data.amount += Number(q.total_amount || 0);
 
-        if (q.status === "pending") data.pending++;
-        if (q.status === "approved") data.approved++;
-        if (q.status === "rejected") data.rejected++;
-        if (q.status === "invoiced") data.invoiced++;
+        if (q.status === "pending") data.pending += 1;
+        if (q.status === "approved") data.approved += 1;
+        if (q.status === "rejected") data.rejected += 1;
+        if (q.status === "invoiced") data.invoiced += 1;
 
         data.quotations.push(q);
       });
 
+      // overall summary for super sales
+      const summary = {
+        totalQuotations: quotations.length,
+        totalAmount: quotations.reduce(
+          (sum, q) => sum + Number(q.total_amount || 0),
+          0
+        ),
+        pending: quotations.filter((q) => q.status === "pending").length,
+        approved: quotations.filter((q) => q.status === "approved").length,
+        rejected: quotations.filter((q) => q.status === "rejected").length,
+        invoiced: quotations.filter((q) => q.status === "invoiced").length
+      };
+
       return res.json({
-        role: "super_sales_admin",
+        success: true,
+        role,
+        summary,
         total: quotations.length,
-        data: grouped
+        branches: Object.values(grouped)
       });
     }
 
     // =========================
-    // 🏢 SALES MANAGER RESPONSE
+    // NORMAL BRANCH SALES RESPONSE
     // =========================
+    const summary = {
+      totalQuotations: quotations.length,
+      totalAmount: quotations.reduce(
+        (sum, q) => sum + Number(q.total_amount || 0),
+        0
+      ),
+      pending: quotations.filter((q) => q.status === "pending").length,
+      approved: quotations.filter((q) => q.status === "approved").length,
+      rejected: quotations.filter((q) => q.status === "rejected").length,
+      invoiced: quotations.filter((q) => q.status === "invoiced").length
+    };
 
     return res.json({
-      role: "sales_manager",
+      success: true,
+      role,
       branch_ids: userBranches,
+      summary,
       total: quotations.length,
       quotations
     });
-
   } catch (err) {
-    console.error(err);
-    res.status(500).json({
+    console.error("listQuotations error:", err);
+    return res.status(500).json({
       success: false,
       error: err.message
     });
   }
 };
-
 exports.reportandanalysis = async (req, res) => {
   try {
 
-    const branchId = req.user?.branch_id || null;
+    // ===============================
+    // 🔐 ROLE FIX
+    // ===============================
+    let role = req.user?.role || "";
 
-    // ===============================
-    // COMMON WHERE
-    // ===============================
-    const whereClause = branchId ? `WHERE branch_id = ${branchId}` : "";
+    if (typeof role === "object") {
+      role = role.name;
+    }
+
+    const branchId = req.user?.branch_id || null;
+    const isSuperSales = role === "super_sales_manager";
+
+    const whereClause = isSuperSales
+      ? ""
+      : branchId
+      ? `WHERE branch_id = ${branchId}`
+      : "";
+
+    const branchCondition = isSuperSales
+      ? ""
+      : branchId
+      ? `AND branch_id = ${branchId}`
+      : "";
 
     // ===============================
     // 1. CARDS
     // ===============================
     const cards = await sequelize.query(`
       SELECT 
+        branch_id AS "branchId",
         COALESCE(SUM(total_amount),0) AS revenue,
-        COALESCE(AVG(total_amount),0) AS avgOrderValue,
-        COUNT(*) AS totalOrders,
-        COUNT(DISTINCT client_id) AS activeClients
+        COALESCE(AVG(total_amount),0) AS "avgOrderValue",
+        COUNT(*) AS "totalOrders",
+        COUNT(DISTINCT client_id) AS "activeClients"
       FROM quotations
       ${whereClause}
+      GROUP BY branch_id
     `);
 
     // ===============================
-    // 2. REVENUE & ORDERS TREND
+    // 2. REVENUE TREND
     // ===============================
     const revenueTrend = await sequelize.query(`
       SELECT 
+        branch_id AS "branchId",
         TO_CHAR("createdAt",'Mon') AS month,
         SUM(total_amount) AS revenue,
         COUNT(*) AS orders
       FROM quotations
       ${whereClause}
-      GROUP BY month, DATE_TRUNC('month',"createdAt")
-      ORDER BY DATE_TRUNC('month',"createdAt")
+      GROUP BY branch_id, month, DATE_TRUNC('month',"createdAt")
+      ORDER BY branch_id, DATE_TRUNC('month',"createdAt")
     `);
 
     // ===============================
@@ -1094,30 +1186,30 @@ exports.reportandanalysis = async (req, res) => {
     // ===============================
     const categoryDistribution = await sequelize.query(`
       SELECT 
+        q.branch_id AS "branchId",
         COALESCE(qi.product_name, 'Others') AS name,
         SUM(qi.amount) AS value
       FROM quotation_items qi
       JOIN quotations q ON q.id = qi.quotation_id
-      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
-      GROUP BY qi.product_name
+      ${isSuperSales ? "" : branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+      GROUP BY q.branch_id, qi.product_name
     `);
 
     // ===============================
-    // 4. WEEKLY ACTIVITY (FIXED ENUM)
+    // 4. WEEKLY ACTIVITY
     // ===============================
     const weeklyActivity = await sequelize.query(`
       SELECT 
+        branch_id AS "branchId",
         TO_CHAR("createdAt",'Dy') AS day,
-
         COUNT(*) FILTER (WHERE status='pending') AS quotations,
         COUNT(*) FILTER (WHERE status='approved') AS approved,
         COUNT(*) FILTER (WHERE status='invoiced') AS invoices
-
       FROM quotations
       WHERE "createdAt" >= NOW() - INTERVAL '7 days'
-      ${branchId ? `AND branch_id = ${branchId}` : ""}
-      GROUP BY day
-      ORDER BY MIN("createdAt")
+      ${branchCondition}
+      GROUP BY branch_id, day
+      ORDER BY branch_id, MIN("createdAt")
     `);
 
     // ===============================
@@ -1125,12 +1217,13 @@ exports.reportandanalysis = async (req, res) => {
     // ===============================
     const profitAnalysis = await sequelize.query(`
       SELECT 
+        branch_id AS "branchId",
         TO_CHAR("createdAt",'Mon') AS month,
         SUM(total_amount * 0.2) AS profit
       FROM quotations
       ${whereClause}
-      GROUP BY month, DATE_TRUNC('month',"createdAt")
-      ORDER BY DATE_TRUNC('month',"createdAt")
+      GROUP BY branch_id, month, DATE_TRUNC('month',"createdAt")
+      ORDER BY branch_id, DATE_TRUNC('month',"createdAt")
     `);
 
     // ===============================
@@ -1138,15 +1231,15 @@ exports.reportandanalysis = async (req, res) => {
     // ===============================
     const topProducts = await sequelize.query(`
       SELECT 
+        q.branch_id AS "branchId",
         qi.product_name,
         SUM(qi.quantity) AS sales,
         SUM(qi.amount) AS revenue
       FROM quotation_items qi
       JOIN quotations q ON q.id = qi.quotation_id
-      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
-      GROUP BY qi.product_name
-      ORDER BY sales DESC
-      LIMIT 5
+      ${isSuperSales ? "" : branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+      GROUP BY q.branch_id, qi.product_name
+      ORDER BY q.branch_id, sales DESC
     `);
 
     // ===============================
@@ -1154,27 +1247,30 @@ exports.reportandanalysis = async (req, res) => {
     // ===============================
     const recentTransactions = await sequelize.query(`
       SELECT 
+        q.branch_id AS "branchId",
         q.quotation_no AS invoice,
         c.name AS client,
         q.total_amount AS amount,
         q.status
       FROM quotations q
       LEFT JOIN clients c ON c.id = q.client_id
-      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
-      ORDER BY q."createdAt" DESC
-      LIMIT 5
+      ${isSuperSales ? "" : branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+      ORDER BY q.branch_id, q."createdAt" DESC
+      LIMIT 20
     `);
 
     // ===============================
-    // 8. INVENTORY STATUS (FIXED ENUM)
+    // 8. INVENTORY STATUS
     // ===============================
     const inventoryStatus = await sequelize.query(`
       SELECT 
+        branch_id AS "branchId",
         COUNT(*) FILTER (WHERE status='GOOD') AS "inStock",
         COUNT(*) FILTER (WHERE status='REPAIRABLE') AS "lowStock",
         COUNT(*) FILTER (WHERE status='DAMAGED') AS "outOfStock"
       FROM stocks
       ${whereClause}
+      GROUP BY branch_id
     `);
 
     // ===============================
@@ -1182,46 +1278,93 @@ exports.reportandanalysis = async (req, res) => {
     // ===============================
     const clientBreakdown = await sequelize.query(`
       SELECT 
+        branch_id AS "branchId",
         COUNT(*) FILTER (WHERE "createdAt" >= NOW() - INTERVAL '30 days') AS "newClients",
         COUNT(*) FILTER (WHERE "createdAt" < NOW() - INTERVAL '30 days') AS "returningClients"
       FROM clients
       ${whereClause}
+      GROUP BY branch_id
     `);
 
     // ===============================
-    // 10. QUICK STATS (FIXED ENUM)
+    // 10. QUICK STATS
     // ===============================
     const quickStats = await sequelize.query(`
       SELECT 
+        branch_id AS "branchId",
         COUNT(*) FILTER (WHERE status='approved') AS "approvedQuotations",
         COUNT(*) FILTER (WHERE status='invoiced') AS "invoicesGenerated",
         COUNT(*) FILTER (WHERE status='pending') AS "pendingApprovals"
       FROM quotations
       ${whereClause}
+      GROUP BY branch_id
     `);
+
+    // ===============================
+    // 🔥 SUPER → GROUP DATA SAFE
+    // ===============================
+    let groupedData = null;
+
+    if (isSuperSales) {
+      const grouped = {};
+
+      const init = (b) => {
+        if (!grouped[b]) {
+          grouped[b] = {
+            branchId: b,
+            cards: {},
+            revenueTrend: [],
+            categoryDistribution: [],
+            weeklyActivity: [],
+            profitAnalysis: [],
+            topProducts: [],
+            recentTransactions: [],
+            inventoryStatus: {},
+            clientBreakdown: {},
+            quickStats: {}
+          };
+        }
+      };
+
+      (cards[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].cards = i; });
+      (revenueTrend[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].revenueTrend.push(i); });
+      (categoryDistribution[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].categoryDistribution.push(i); });
+      (weeklyActivity[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].weeklyActivity.push(i); });
+      (profitAnalysis[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].profitAnalysis.push(i); });
+      (topProducts[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].topProducts.push(i); });
+      (recentTransactions[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].recentTransactions.push(i); });
+      (inventoryStatus[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].inventoryStatus = i; });
+      (clientBreakdown[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].clientBreakdown = i; });
+      (quickStats[0] || []).forEach(i => { init(i.branchId); grouped[i.branchId].quickStats = i; });
+
+      groupedData = Object.values(grouped);
+    }
 
     // ===============================
     // FINAL RESPONSE
     // ===============================
-    res.json({
+    return res.json({
       success: true,
 
-      cards: cards[0][0],
-      revenueTrend: revenueTrend[0],
-      categoryDistribution: categoryDistribution[0],
-      weeklyActivity: weeklyActivity[0],
-      profitAnalysis: profitAnalysis[0],
-      topProducts: topProducts[0],
-      recentTransactions: recentTransactions[0],
-      inventoryStatus: inventoryStatus[0][0],
-      clientBreakdown: clientBreakdown[0][0],
-      quickStats: quickStats[0][0]
-
+      ...(isSuperSales
+        ? { branches: groupedData || [] }
+        : {
+            cards: cards[0]?.[0] || {},
+            revenueTrend: revenueTrend[0] || [],
+            categoryDistribution: categoryDistribution[0] || [],
+            weeklyActivity: weeklyActivity[0] || [],
+            profitAnalysis: profitAnalysis[0] || [],
+            topProducts: topProducts[0] || [],
+            recentTransactions: recentTransactions[0] || [],
+            inventoryStatus: inventoryStatus[0]?.[0] || {},
+            clientBreakdown: clientBreakdown[0]?.[0] || {},
+            quickStats: quickStats[0]?.[0] || {}
+          })
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({
+    console.error("❌ REPORT ERROR:", err);
+    return res.status(500).json({
       success: false,
       error: err.message
     });
@@ -1231,107 +1374,168 @@ exports.reportandanalysis = async (req, res) => {
 //top screen work on this 
 exports.getAdvancedSalesAnalytics = async (req, res) => {
   try {
-
     const branchId = req.user?.branch_id || null;
-    const whereClause = branchId ? `WHERE branch_id = ${branchId}` : "";
+    const role = req.user?.role || "";
+
+    const isSuperSales = role === "super_sales_manager";
+
+    const whereClause = isSuperSales
+      ? ""
+      : branchId
+      ? `WHERE branch_id = ${branchId}`
+      : "";
 
     // ===============================
-    // 1. QUICK ACTION CARDS
+    // 1. QUICK ACTION CARDS (🔥 FIXED ONLY THIS PART)
     // ===============================
     const quickCards = await sequelize.query(`
       SELECT 
-        COALESCE(SUM(total_amount),0) AS todaySale,
-        COUNT(*) AS totalOrders,
-        COUNT(*) FILTER (WHERE status='pending') AS pendingQuotation,
-        COUNT(*) FILTER (WHERE status='invoiced') AS readyToDispatch
+        COALESCE(SUM(total_amount),0) AS "totalSale",
+        COUNT(*) AS "totalOrders",
+
+        COUNT(*) FILTER (WHERE status='pending') AS "pendingQuotation",
+        COUNT(*) FILTER (WHERE status='invoiced') AS "readyToDispatch"
+
       FROM quotations
-      WHERE DATE("createdAt") = CURRENT_DATE
-      ${branchId ? `AND branch_id = ${branchId}` : ""}
+
+      ${isSuperSales ? "" : branchId ? `WHERE branch_id = ${branchId}` : ""}
     `);
 
     // ===============================
-    // 2. SALES ANALYTICS (ONLINE vs OFFLINE)
+    // 2. SALES ANALYTICS (UNCHANGED)
     // ===============================
     const salesAnalytics = await sequelize.query(`
       SELECT 
+        branch_id AS "branchId",
         TO_CHAR("createdAt",'Mon') AS month,
 
-        SUM(CASE WHEN reference_no IS NOT NULL THEN total_amount ELSE 0 END) AS onlineSales,
-        SUM(CASE WHEN reference_no IS NULL THEN total_amount ELSE 0 END) AS offlineSales
+        SUM(CASE WHEN reference_no IS NOT NULL THEN total_amount ELSE 0 END) AS "onlineSales",
+        SUM(CASE WHEN reference_no IS NULL THEN total_amount ELSE 0 END) AS "offlineSales"
 
       FROM quotations
       ${whereClause}
-      GROUP BY month, DATE_TRUNC('month',"createdAt")
-      ORDER BY DATE_TRUNC('month',"createdAt")
+      GROUP BY branch_id, month, DATE_TRUNC('month',"createdAt")
+      ORDER BY branch_id, DATE_TRUNC('month',"createdAt")
     `);
 
     // ===============================
-    // 3. QUOTATION STATUS (DONUT)
+    // 3. QUOTATION STATUS (UNCHANGED)
     // ===============================
     const quotationStatus = await sequelize.query(`
       SELECT 
-        COUNT(*) FILTER (WHERE status='pending') AS pending,
-        COUNT(*) FILTER (WHERE status='approved') AS approved,
-        COUNT(*) FILTER (WHERE status='rejected') AS rejected,
-        COUNT(*) FILTER (WHERE status='invoiced') AS invoiced,
-        COALESCE(SUM(total_amount),0) AS totalValue
+        branch_id AS "branchId",
+
+        COUNT(*) FILTER (WHERE status='pending') AS "pending",
+        COUNT(*) FILTER (WHERE status='approved') AS "approved",
+        COUNT(*) FILTER (WHERE status='rejected') AS "rejected",
+        COUNT(*) FILTER (WHERE status='invoiced') AS "invoiced",
+
+        COALESCE(SUM(total_amount),0) AS "totalValue"
+
       FROM quotations
       ${whereClause}
+      GROUP BY branch_id
     `);
 
     // ===============================
-    // 4. SALES BY CATEGORY (UNITS SOLD)
+    // 4. CATEGORY SALES (UNCHANGED)
     // ===============================
     const categorySales = await sequelize.query(`
       SELECT 
+        q.branch_id AS "branchId",
         qi.product_name AS category,
         SUM(qi.quantity) AS units,
         SUM(qi.amount) AS revenue
+
       FROM quotation_items qi
       JOIN quotations q ON q.id = qi.quotation_id
-      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
-      GROUP BY qi.product_name
-      ORDER BY units DESC
+
+      ${isSuperSales ? "" : branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+
+      GROUP BY q.branch_id, qi.product_name
+      ORDER BY q.branch_id, units DESC
     `);
 
     // ===============================
-    // 5. RECENT ACTIVITY
+    // 5. RECENT ACTIVITY (UNCHANGED)
     // ===============================
     const recentActivity = await sequelize.query(`
       SELECT 
+        q.branch_id AS "branchId",
         q.quotation_no,
         c.name AS client,
         q.total_amount,
         q.status,
         q."createdAt"
+
       FROM quotations q
       LEFT JOIN clients c ON c.id = q.client_id
-      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
-      ORDER BY q."createdAt" DESC
-      LIMIT 10
+
+      ${isSuperSales ? "" : branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+
+      ORDER BY q.branch_id, q."createdAt" DESC
+      LIMIT 20
     `);
 
     // ===============================
-    // FINAL RESPONSE
+    // 🔥 SUPER → GROUP BY BRANCH (UNCHANGED)
+    // ===============================
+    let groupedData = null;
+
+    if (isSuperSales) {
+      const grouped = {};
+
+      const init = (b) => {
+        if (!grouped[b]) {
+          grouped[b] = {
+            branchId: b,
+            salesAnalytics: [],
+            quotationStatus: {},
+            categorySales: [],
+            recentActivity: []
+          };
+        }
+      };
+
+      salesAnalytics[0].forEach(i => {
+        init(i.branchId);
+        grouped[i.branchId].salesAnalytics.push(i);
+      });
+
+      quotationStatus[0].forEach(i => {
+        init(i.branchId);
+        grouped[i.branchId].quotationStatus = i;
+      });
+
+      categorySales[0].forEach(i => {
+        init(i.branchId);
+        grouped[i.branchId].categorySales.push(i);
+      });
+
+      recentActivity[0].forEach(i => {
+        init(i.branchId);
+        grouped[i.branchId].recentActivity.push(i);
+      });
+
+      groupedData = Object.values(grouped);
+    }
+
+    // ===============================
+    // FINAL RESPONSE (UNCHANGED STRUCTURE)
     // ===============================
     res.json({
       success: true,
 
-      quickAction: {
-        todaySale: quickCards[0][0].todaysale,
-        totalSale: quickCards[0][0].totalorders,
-        pendingQuotation: quickCards[0][0].pendingquotation,
-        readyToDispatch: quickCards[0][0].readytodispatch
-      },
+      quickAction: quickCards[0][0], // ✅ now total data
 
-      salesAnalytics: salesAnalytics[0],
-
-      quotationStatus: quotationStatus[0][0],
-
-      categorySales: categorySales[0],
-
-      recentActivity: recentActivity[0]
-
+      ...(isSuperSales
+        ? { branches: groupedData }
+        : {
+            salesAnalytics: salesAnalytics[0],
+            quotationStatus: quotationStatus[0][0],
+            categorySales: categorySales[0],
+            recentActivity: recentActivity[0]
+          })
     });
 
   } catch (err) {
@@ -1342,7 +1546,6 @@ exports.getAdvancedSalesAnalytics = async (req, res) => {
     });
   }
 };
-
 exports.getClientLedgerSummary = async (req, res) => {
   try {
     const branchId = req.user?.branch_id || null;
@@ -1836,6 +2039,1005 @@ exports.getSuperAdminDashboard = async (req, res) => {
     console.error(err);
     res.status(500).json({
       error: err.message
+    });
+  }
+};
+
+exports.getStateWiseSales = async (req, res) => {
+  try {
+
+    const branchId = req.user?.branch_id || null;
+    let role = req.user?.role || "";
+
+    if (typeof role === "object") role = role.name;
+
+    const isSuper = role === "super_sales_manager";
+
+    const whereClause = isSuper
+      ? ""
+      : branchId
+      ? `WHERE q.branch_id = ${branchId}`
+      : "";
+
+    const data = await sequelize.query(`
+      SELECT 
+        b.state AS "state",
+        b.name AS "branchName",
+        b.location AS "city",
+        q.branch_id AS "branchId",
+
+        COUNT(q.id) AS "totalOrders",
+
+        COALESCE(SUM(q.total_amount),0) AS "totalSales",
+
+        COALESCE(SUM(
+          CASE WHEN q.status != 'invoiced' THEN q.total_amount ELSE 0 END
+        ),0) AS "pendingAmount",
+
+        COALESCE(SUM(
+          CASE WHEN q.status = 'invoiced' THEN q.total_amount ELSE 0 END
+        ),0) AS "receivedAmount"
+
+      FROM quotations q
+      LEFT JOIN branches b ON b.id = q.branch_id
+
+      ${whereClause}
+
+      GROUP BY b.state, b.name, b.location, q.branch_id
+      ORDER BY b.state, "totalSales" DESC
+    `);
+
+    const grouped = {};
+
+    data[0].forEach(item => {
+      const state = item.state || "Unknown";
+
+      if (!grouped[state]) {
+        grouped[state] = {
+          state,
+          totalSales: 0,
+          pendingAmount: 0,
+          receivedAmount: 0,
+          branches: []
+        };
+      }
+
+      grouped[state].branches.push({
+        branchId: item.branchId,
+        branchName: item.branchName,
+        city: item.city,
+        totalOrders: Number(item.totalOrders),
+        totalSales: Number(item.totalSales),
+        pendingAmount: Number(item.pendingAmount),
+        receivedAmount: Number(item.receivedAmount)
+      });
+
+      grouped[state].totalSales += Number(item.totalSales);
+      grouped[state].pendingAmount += Number(item.pendingAmount);
+      grouped[state].receivedAmount += Number(item.receivedAmount);
+    });
+
+    res.json({
+      success: true,
+      data: Object.values(grouped)
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+exports.getBranchesByState = async (req, res) => {
+  try {
+
+    const { state } = req.params;
+
+    let role = req.user?.role || "";
+    if (typeof role === "object") role = role.name;
+
+    const branchId = req.user?.branch_id || null;
+    const isSuper = role === "super_sales_manager";
+
+    const whereClause = isSuper
+      ? `WHERE TRIM(SPLIT_PART(c.address, ',', array_length(string_to_array(c.address, ','),1))) = :state`
+      : branchId
+      ? `WHERE q.branch_id = ${branchId}
+         AND TRIM(SPLIT_PART(c.address, ',', array_length(string_to_array(c.address, ','),1))) = :state`
+      : "";
+
+    const data = await sequelize.query(`
+      SELECT 
+        q.branch_id AS "branchId",
+
+        COUNT(q.id) AS "totalOrders",
+
+        COALESCE(SUM(q.total_amount),0) AS "totalSales",
+
+        COALESCE(SUM(
+          CASE 
+            WHEN q.status != 'invoiced' THEN q.total_amount 
+            ELSE 0 
+          END
+        ),0) AS "pendingAmount",
+
+        COALESCE(SUM(
+          CASE 
+            WHEN q.status = 'invoiced' THEN q.total_amount 
+            ELSE 0 
+          END
+        ),0) AS "receivedAmount"
+
+      FROM quotations q
+
+      LEFT JOIN clients c ON c.id = q.client_id
+
+      ${whereClause}
+
+      GROUP BY q.branch_id
+      ORDER BY "totalSales" DESC
+    `, {
+      replacements: { state }
+    });
+
+    res.json({
+      success: true,
+      state,
+      branches: data[0]
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+
+exports.getStateDetailsDashboard = async (req, res) => {
+  try {
+
+    const user = req.user;
+    const role = user?.role?.name || user?.role;
+
+    const SUPER_ROLES = [
+      "super_stock_manager",
+      "super_admin",
+      "super_sales_manager",
+      "super_inventory_manager"
+    ];
+
+    // =========================
+    // 🔐 ACCESS CONTROL
+    // =========================
+    if (!SUPER_ROLES.includes(role)) {
+      return res.status(403).json({
+        success: false,
+        message: "❌ Access Denied"
+      });
+    }
+
+    const { stateName } = req.params;
+
+    // =========================
+    // 🔥 BRANCH FILTER (IMPORTANT)
+    // =========================
+    const branchFilter = getBranchFilter(user);
+
+    let branchCondition = "";
+    let replacements = { stateName };
+
+    // 👉 APPLY FILTER ONLY IF NOT SUPER
+    if (Object.keys(branchFilter).length > 0) {
+      if (branchFilter.branch_id?.[Symbol.for("sequelize.operator")]) {
+        // safety (optional)
+      }
+
+      if (branchFilter.branch_id?.[Op.in]) {
+        branchCondition = `AND b.id IN (:branchIds)`;
+        replacements.branchIds = branchFilter.branch_id[Op.in];
+      } else if (branchFilter.branch_id) {
+        branchCondition = `AND b.id = :branchId`;
+        replacements.branchId = branchFilter.branch_id;
+      }
+    }
+
+    // =========================
+    // 📊 BRANCH SUMMARY
+    // =========================
+    const branchData = await sequelize.query(`
+      SELECT 
+        b.id AS "branchId",
+        b.name AS "branchName",
+
+        COUNT(DISTINCT b.id) AS "totalBranches",
+
+        COALESCE(SUM(s.quantity),0) AS "totalStock",
+        COALESCE(SUM(s.value),0) AS "totalValue",
+
+        COALESCE(SUM(s.quantity),0) AS "currentStock",
+
+        COALESCE(SUM(
+          CASE WHEN l.type = 'PURCHASE' THEN l.quantity ELSE 0 END
+        ),0) AS "stockIn",
+
+        COALESCE(SUM(
+          CASE WHEN l.type = 'SALE' THEN l.quantity ELSE 0 END
+        ),0) AS "stockOut",
+
+        COALESCE(SUM(
+          CASE WHEN l.type = 'PURCHASE' THEN 1 ELSE 0 END
+        ),0) AS "purchaseCount",
+
+        COALESCE(SUM(
+          CASE WHEN l.type = 'SALE' THEN 1 ELSE 0 END
+        ),0) AS "salesCount"
+
+      FROM branches b
+      LEFT JOIN stocks s ON s.branch_id = b.id
+      LEFT JOIN ledger l ON l.branch_id = b.id
+
+      WHERE b.state = :stateName
+      ${branchCondition}
+
+      GROUP BY b.id
+      ORDER BY "totalValue" DESC
+    `, {
+      replacements
+    });
+
+    // =========================
+    // 📊 CHART DATA
+    // =========================
+    const chartData = branchData[0].map((b) => ({
+      label: b.branchName,
+      value: Number(b.totalValue)
+    }));
+
+    // =========================
+    // 🔝 TOP BRANCHES
+    // =========================
+    const topBranches = [...branchData[0]]
+      .sort((a, b) => Number(b.totalValue) - Number(a.totalValue))
+      .slice(0, 5);
+
+    // =========================
+    // 📈 SUMMARY
+    // =========================
+    const summary = await sequelize.query(`
+      SELECT 
+        COALESCE(SUM(s.value),0) AS "totalStockValue",
+        COALESCE(SUM(s.quantity),0) AS "currentStock",
+        COUNT(s.id) AS "totalItems",
+
+        COALESCE(SUM(
+          CASE WHEN l.type = 'PURCHASE' THEN l.quantity ELSE 0 END
+        ),0) AS "stockIn",
+
+        COALESCE(SUM(
+          CASE WHEN l.type = 'SALE' THEN l.quantity ELSE 0 END
+        ),0) AS "stockOut"
+
+      FROM branches b
+      LEFT JOIN stocks s ON s.branch_id = b.id
+      LEFT JOIN ledger l ON l.branch_id = b.id
+
+      WHERE b.state = :stateName
+      ${branchCondition}
+    `, {
+      replacements
+    });
+
+    // =========================
+    // ✅ FINAL RESPONSE
+    // =========================
+    return res.json({
+      success: true,
+      state: stateName,
+      summary: summary[0][0],
+      branches: branchData[0],
+      charts: {
+        branchValueChart: chartData
+      },
+      topBranches
+    });
+
+  } catch (err) {
+    console.error("ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+
+exports.getAllStatesDashboard = async (req, res) => {
+  try {
+    const role = req.user?.role?.name || req.user?.role;
+
+    const SUPER_ROLES = [
+      "super_stock_manager",
+      "super_admin",
+      "super_sales_manager",
+      "super_inventory_manager"
+    ];
+
+    if (!SUPER_ROLES.includes(role)) {
+      return res.status(403).json({
+        success: false,
+        message: "❌ Access Denied"
+      });
+    }
+
+    // =========================
+    // 🟦 CARDS
+    // =========================
+    const summaryData = await sequelize.query(`
+      SELECT 
+        COALESCE(SUM(CASE WHEN type='SALE' THEN total ELSE 0 END),0) AS "totalRevenue",
+        COALESCE(SUM(CASE WHEN type='PURCHASE' THEN total ELSE 0 END),0) AS "totalPurchase",
+        COALESCE(SUM(CASE WHEN type='SALE' THEN quantity ELSE 0 END),0) AS "totalSales"
+      FROM ledger
+    `, { type: QueryTypes.SELECT });
+
+    const totalRevenue = Number(summaryData[0].totalRevenue || 0);
+    const totalPurchase = Number(summaryData[0].totalPurchase || 0);
+    const totalSales = Number(summaryData[0].totalSales || 0);
+
+    const branchCount = await sequelize.query(`
+      SELECT COUNT(*) AS count FROM branches
+    `, { type: QueryTypes.SELECT });
+
+    // =========================
+    // 📊 SALES TREND (FIXED)
+    // =========================
+    const salesTrend = await sequelize.query(`
+      SELECT 
+        DATE_TRUNC('week', "createdAt") AS week,
+
+        SUM(CASE WHEN type='SALE' THEN quantity ELSE 0 END) AS sales,
+        SUM(CASE WHEN type='PURCHASE' THEN quantity ELSE 0 END) AS purchase
+
+      FROM ledger
+      GROUP BY week
+      ORDER BY week ASC
+    `, { type: QueryTypes.SELECT });
+
+    // =========================
+    // 📉 QUOTATION TREND (FIXED)
+    // =========================
+    const quotationTrend = await sequelize.query(`
+      SELECT 
+        DATE_TRUNC('week', "createdAt") AS week,
+
+        COUNT(CASE WHEN status='pending' THEN 1 END) AS pending,
+        COUNT(CASE WHEN status='rejected' THEN 1 END) AS rejected
+
+      FROM quotations
+      GROUP BY week
+      ORDER BY week ASC
+    `, { type: QueryTypes.SELECT });
+
+    // =========================
+    // 📋 STATE TABLE (NO DUPLICATE ISSUE)
+    // =========================
+    const statesData = await sequelize.query(`
+      SELECT 
+        UPPER(TRIM(b.state)) AS state,
+
+        COUNT(DISTINCT b.id) AS "totalBranches",
+
+        COALESCE(SUM(l.sales_qty),0) AS "totalSales",
+        COALESCE(SUM(l.sales_amount),0) AS "totalRevenue",
+        COALESCE(SUM(q.pending_qt),0) AS "pendingQuotation"
+
+      FROM branches b
+
+      LEFT JOIN (
+        SELECT 
+          branch_id,
+          SUM(CASE WHEN type='SALE' THEN quantity ELSE 0 END) AS sales_qty,
+          SUM(CASE WHEN type='SALE' THEN total ELSE 0 END) AS sales_amount
+        FROM ledger
+        GROUP BY branch_id
+      ) l ON l.branch_id = b.id
+
+      LEFT JOIN (
+        SELECT 
+          branch_id,
+          COUNT(CASE WHEN status='pending' THEN 1 END) AS pending_qt
+        FROM quotations
+        GROUP BY branch_id
+      ) q ON q.branch_id = b.id
+
+      WHERE 
+        b.state IS NOT NULL
+        AND TRIM(b.state) != ''
+        AND LOWER(TRIM(b.state)) NOT IN ('state','test','dummy')
+
+      GROUP BY UPPER(TRIM(b.state))
+      ORDER BY "totalRevenue" DESC
+    `, { type: QueryTypes.SELECT });
+
+    // =========================
+    // 🧹 CLEAN DATA
+    // =========================
+    const cleanedStates = statesData.map(s => ({
+      state: s.state,
+      totalBranches: Number(s.totalBranches),
+      totalSales: Number(s.totalSales),
+      totalRevenue: Number(s.totalRevenue),
+      pendingQuotation: Number(s.pendingQuotation)
+    }));
+
+    // =========================
+    // 📊 STATE CHART
+    // =========================
+    const stateChart = cleanedStates.map(s => ({
+      label: s.state,
+      value: s.totalRevenue
+    }));
+
+    // =========================
+    // 🔝 TOP STATES
+    // =========================
+    const topStates = [...cleanedStates]
+      .sort((a, b) => b.totalRevenue - a.totalRevenue)
+      .slice(0, 5);
+
+    // =========================
+    // ✅ FINAL RESPONSE
+    // =========================
+    return res.json({
+      success: true,
+
+      // 🟦 CARDS
+      cards: {
+        totalRevenue,
+        totalProfit: totalRevenue - totalPurchase,
+        totalSales,
+        totalBranches: Number(branchCount[0].count)
+      },
+
+      // 📊 CHARTS
+      charts: {
+        salesTrend,
+        quotationTrend,
+        stateRevenueChart: stateChart
+      },
+
+      // 📋 TABLE
+      states: cleanedStates,
+
+      // 🔝 TOP
+      topStates
+    });
+
+  } catch (err) {
+    console.error("❌ ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+
+
+exports.getStateDashboard = async (req, res) => {
+  try {
+    const role = req.user?.role?.name || req.user?.role;
+
+    const SUPER_ROLES = [
+      "super_stock_manager",
+      "super_admin",
+      "super_sales_manager",
+      "super_inventory_manager"
+    ];
+
+    if (!SUPER_ROLES.includes(role)) {
+      return res.status(403).json({
+        success: false,
+        message: "❌ Access Denied"
+      });
+    }
+
+    const { state } = req.params;
+
+    // =========================
+    // 🟦 CARDS
+    // =========================
+    const summary = await sequelize.query(`
+      SELECT 
+        COALESCE(SUM(CASE WHEN l.type='SALE' THEN l.quantity ELSE 0 END),0) AS "totalSales",
+
+        COALESCE(SUM(CASE WHEN q.status='pending' THEN 1 ELSE 0 END),0) AS "pendingQuotation",
+
+        COALESCE(SUM(
+          CASE 
+            WHEN l.type='SALE' 
+            AND DATE_TRUNC('month', l."createdAt") = DATE_TRUNC('month', CURRENT_DATE)
+            THEN l.quantity 
+            ELSE 0 
+          END
+        ),0) AS "salesThisMonth",
+
+        COALESCE(COUNT(DISTINCT c.id),0) AS "totalClients"
+
+      FROM branches b
+      LEFT JOIN ledger l ON l.branch_id = b.id
+      LEFT JOIN quotations q ON q.branch_id = b.id
+      LEFT JOIN clients c ON c.branch_id = b.id
+
+      WHERE UPPER(TRIM(b.state)) = UPPER(TRIM(:state))
+    `, {
+      replacements: { state },
+      type: QueryTypes.SELECT
+    });
+
+    // =========================
+    // 📊 STOCK IN / OUT CHART
+    // =========================
+    const stockChart = await sequelize.query(`
+      SELECT 
+        DATE_TRUNC('week', l."createdAt") AS week,
+
+        SUM(CASE WHEN l.type='PURCHASE' THEN l.quantity ELSE 0 END) AS stockIn,
+        SUM(CASE WHEN l.type='SALE' THEN l.quantity ELSE 0 END) AS stockOut
+
+      FROM ledger l
+      JOIN branches b ON b.id = l.branch_id
+
+      WHERE UPPER(TRIM(b.state)) = UPPER(TRIM(:state))
+
+      GROUP BY week
+      ORDER BY week ASC
+    `, {
+      replacements: { state },
+      type: QueryTypes.SELECT
+    });
+
+    // =========================
+    // 📉 QUOTATION CHART
+    // =========================
+    const quotationChart = await sequelize.query(`
+      SELECT 
+        DATE_TRUNC('week', q."createdAt") AS week,
+
+        COUNT(CASE WHEN q.status='pending' THEN 1 END) AS pending,
+        COUNT(CASE WHEN q.status='rejected' THEN 1 END) AS rejected
+
+      FROM quotations q
+      JOIN branches b ON b.id = q.branch_id
+
+      WHERE UPPER(TRIM(b.state)) = UPPER(TRIM(:state))
+
+      GROUP BY week
+      ORDER BY week ASC
+    `, {
+      replacements: { state },
+      type: QueryTypes.SELECT
+    });
+
+    // =========================
+    // 📋 BRANCH TABLE (NO DUPLICATE)
+    // =========================
+    const branches = await sequelize.query(`
+      SELECT 
+        b.id,
+        b.name AS "branchName",
+
+        COALESCE(l.sales_qty,0) AS "totalSales",
+        COALESCE(l.sales_amount,0) AS "totalRevenue",
+
+        COALESCE(c.total_clients,0) AS "totalClients",
+
+        COALESCE(q.pending_qt,0) AS "pendingQuotation",
+        COALESCE(q.rejected_qt,0) AS "rejectedQuotation"
+
+      FROM branches b
+
+      LEFT JOIN (
+        SELECT 
+          branch_id,
+          SUM(CASE WHEN type='SALE' THEN quantity ELSE 0 END) AS sales_qty,
+          SUM(CASE WHEN type='SALE' THEN total ELSE 0 END) AS sales_amount
+        FROM ledger
+        GROUP BY branch_id
+      ) l ON l.branch_id = b.id
+
+      LEFT JOIN (
+        SELECT 
+          branch_id,
+          COUNT(*) FILTER (WHERE status='pending') AS pending_qt,
+          COUNT(*) FILTER (WHERE status='rejected') AS rejected_qt
+        FROM quotations
+        GROUP BY branch_id
+      ) q ON q.branch_id = b.id
+
+      LEFT JOIN (
+        SELECT 
+          branch_id,
+          COUNT(*) AS total_clients
+        FROM clients
+        GROUP BY branch_id
+      ) c ON c.branch_id = b.id
+
+      WHERE UPPER(TRIM(b.state)) = UPPER(TRIM(:state))
+      ORDER BY "totalRevenue" DESC
+    `, {
+      replacements: { state },
+      type: QueryTypes.SELECT
+    });
+
+    // =========================
+    // 🧹 FINAL CLEAN RESPONSE
+    // =========================
+    return res.json({
+      success: true,
+      state,
+
+      cards: {
+        totalSales: Number(summary[0].totalSales),
+        pendingQuotation: Number(summary[0].pendingQuotation),
+        salesThisMonth: Number(summary[0].salesThisMonth),
+        totalClients: Number(summary[0].totalClients)
+      },
+
+      charts: {
+        stockTrend: stockChart,
+        quotationTrend: quotationChart
+      },
+
+      branches: branches.map(b => ({
+        ...b,
+        totalSales: Number(b.totalSales),
+        totalRevenue: Number(b.totalRevenue),
+        totalClients: Number(b.totalClients),
+        pendingQuotation: Number(b.pendingQuotation),
+        rejectedQuotation: Number(b.rejectedQuotation)
+      }))
+    });
+
+  } catch (err) {
+    console.error("❌ ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+exports.getBranchDashboard = async (req, res) => {
+  try {
+    const role = req.user?.role?.name || req.user?.role;
+
+    const SUPER_ROLES = [
+      "super_stock_manager",
+      "super_admin",
+      "super_sales_manager",
+      "super_inventory_manager"
+    ];
+
+    if (!SUPER_ROLES.includes(role)) {
+      return res.status(403).json({
+        success: false,
+        message: "❌ Access Denied"
+      });
+    }
+
+    const { branchId } = req.params;
+
+    // =========================
+    // 🟦 CARDS
+    // =========================
+    const summary = await sequelize.query(`
+      SELECT 
+        COALESCE(SUM(CASE WHEN type='SALE' THEN quantity ELSE 0 END),0) AS "totalSales",
+
+        COALESCE(SUM(
+          CASE WHEN type='SALE' AND DATE_TRUNC('month', "createdAt") = DATE_TRUNC('month', CURRENT_DATE)
+          THEN quantity ELSE 0 END
+        ),0) AS "salesThisMonth",
+
+        COALESCE(SUM(
+          CASE WHEN type='SALE' THEN total ELSE 0 END
+        ),0) AS "totalRevenue"
+
+      FROM ledger
+      WHERE branch_id = :branchId
+    `, {
+      replacements: { branchId },
+      type: QueryTypes.SELECT
+    });
+
+    // Pending QT
+    const pendingQT = await sequelize.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status='pending') AS pending,
+        COUNT(*) FILTER (WHERE status='rejected') AS rejected
+      FROM quotations
+      WHERE branch_id = :branchId
+    `, {
+      replacements: { branchId },
+      type: QueryTypes.SELECT
+    });
+
+    // Clients
+    const clientCount = await sequelize.query(`
+      SELECT COUNT(*) AS total FROM clients WHERE branch_id = :branchId
+    `, {
+      replacements: { branchId },
+      type: QueryTypes.SELECT
+    });
+
+    // =========================
+    // 📊 STOCK IN / OUT CHART
+    // =========================
+    const stockChart = await sequelize.query(`
+      SELECT 
+        DATE_TRUNC('week', "createdAt") AS week,
+
+        SUM(CASE WHEN type='PURCHASE' THEN quantity ELSE 0 END) AS stockIn,
+        SUM(CASE WHEN type='SALE' THEN quantity ELSE 0 END) AS stockOut
+
+      FROM ledger
+      WHERE branch_id = :branchId
+
+      GROUP BY week
+      ORDER BY week ASC
+    `, {
+      replacements: { branchId },
+      type: QueryTypes.SELECT
+    });
+
+    // =========================
+    // 📉 QUOTATION CHART
+    // =========================
+    const quotationChart = await sequelize.query(`
+      SELECT 
+        DATE_TRUNC('week', "createdAt") AS week,
+
+        COUNT(CASE WHEN status='pending' THEN 1 END) AS pending,
+        COUNT(CASE WHEN status='rejected' THEN 1 END) AS rejected
+
+      FROM quotations
+      WHERE branch_id = :branchId
+
+      GROUP BY week
+      ORDER BY week ASC
+    `, {
+      replacements: { branchId },
+      type: QueryTypes.SELECT
+    });
+
+    // =========================
+    // 📋 PRODUCT TABLE (TOP ITEMS)
+    // =========================
+    const products = await sequelize.query(`
+      SELECT 
+        s.item AS "productName",
+        s.category AS "category",
+
+        SUM(CASE WHEN l.type='SALE' THEN l.quantity ELSE 0 END) AS "totalSales",
+        SUM(CASE WHEN l.type='SALE' THEN l.total ELSE 0 END) AS "totalRevenue",
+
+        COUNT(DISTINCT c.id) AS "clients",
+
+        COUNT(CASE WHEN q.status='pending' THEN 1 END) AS "pendingQuotation",
+        COUNT(CASE WHEN q.status='rejected' THEN 1 END) AS "rejectedQuotation"
+
+      FROM stocks s
+      LEFT JOIN ledger l ON l.stock_id = s.id
+      LEFT JOIN quotations q ON q.branch_id = s.branch_id
+      LEFT JOIN clients c ON c.branch_id = s.branch_id
+
+      WHERE s.branch_id = :branchId
+
+      GROUP BY s.item, s.category
+      ORDER BY "totalRevenue" DESC
+      LIMIT 10
+    `, {
+      replacements: { branchId },
+      type: QueryTypes.SELECT
+    });
+
+    // =========================
+    // ✅ FINAL RESPONSE
+    // =========================
+    return res.json({
+      success: true,
+
+      cards: {
+        totalSales: Number(summary[0].totalSales),
+        pendingQuotation: Number(pendingQT[0].pending),
+        salesThisMonth: Number(summary[0].salesThisMonth),
+        totalClients: Number(clientCount[0].total)
+      },
+
+      charts: {
+        stockTrend: stockChart,
+        quotationTrend: quotationChart
+      },
+
+      products: products.map(p => ({
+        productName: p.productName,
+        category: p.category,
+        totalSales: Number(p.totalSales),
+        totalRevenue: Number(p.totalRevenue),
+        clients: Number(p.clients),
+        pendingQuotation: Number(p.pendingQuotation),
+        rejectedQuotation: Number(p.rejectedQuotation)
+      }))
+    });
+
+  } catch (err) {
+    console.error("❌ ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+exports.getItemDashboard = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+
+  
+    const summary = await sequelize.query(`
+      SELECT 
+        COALESCE(SUM(l.quantity),0) AS "totalQty",
+        COALESCE(SUM(s.value),0) AS "stockValue",
+
+        COALESCE(SUM(
+          CASE WHEN l.type='SALE' THEN l.total ELSE 0 END
+        ),0) AS "totalRevenue",
+
+        COUNT(l.id) AS "totalInvoices"
+
+      FROM ledger l
+      JOIN stocks s ON s.id = l.stock_id
+
+      WHERE l.stock_id = :itemId
+    `, {
+      replacements: { itemId },
+      type: QueryTypes.SELECT
+    });
+
+
+    const stockChart = await sequelize.query(`
+      SELECT 
+        DATE_TRUNC('week', l."createdAt") AS week,
+
+        SUM(CASE WHEN l.type='SALE' THEN l.quantity ELSE 0 END) AS sales,
+        SUM(CASE WHEN l.type='PURCHASE' THEN l.quantity ELSE 0 END) AS purchase
+
+      FROM ledger l
+      WHERE l.stock_id = :itemId
+
+      GROUP BY week
+      ORDER BY week ASC
+    `, {
+      replacements: { itemId },
+      type: QueryTypes.SELECT
+    });
+
+    const revenueChart = await sequelize.query(`
+      SELECT 
+        DATE_TRUNC('week', l."createdAt") AS week,
+
+        SUM(CASE WHEN l.type='SALE' THEN l.total ELSE 0 END) AS revenue,
+        SUM(CASE WHEN l.type='PURCHASE' THEN l.total ELSE 0 END) AS cost
+
+      FROM ledger l
+      WHERE l.stock_id = :itemId
+
+      GROUP BY week
+      ORDER BY week ASC
+    `, {
+      replacements: { itemId },
+      type: QueryTypes.SELECT
+    });
+
+ 
+    const tableData = await sequelize.query(`
+      SELECT 
+        l."createdAt" AS date,
+
+        l.reference_no AS "invoiceNumber",
+
+        -- ✅ FIXED CLIENT (NO ERROR)
+        'Direct Sale' AS "clientName",
+
+        b.name AS "branch",
+
+        l.quantity AS qty,
+        l.rate,
+        l.total AS amount,
+
+        s.status,
+
+        -- 🧠 AGING
+        CASE 
+          WHEN AGE(NOW(), l."createdAt") < INTERVAL '30 days' THEN '1 month'
+          WHEN AGE(NOW(), l."createdAt") < INTERVAL '90 days' THEN '3 months'
+          WHEN AGE(NOW(), l."createdAt") < INTERVAL '180 days' THEN '6 months'
+          WHEN AGE(NOW(), l."createdAt") < INTERVAL '365 days' THEN '1 year'
+          WHEN AGE(NOW(), l."createdAt") < INTERVAL '730 days' THEN '2 years'
+          ELSE '2+ years'
+        END AS "aging"
+
+      FROM ledger l
+      JOIN stocks s ON s.id = l.stock_id
+      LEFT JOIN branches b ON b.id = l.branch_id
+
+      WHERE l.stock_id = :itemId
+
+      ORDER BY l."createdAt" DESC
+      LIMIT 50
+    `, {
+      replacements: { itemId },
+      type: QueryTypes.SELECT
+    });
+
+    
+    const itemInfo = await sequelize.query(`
+      SELECT item, category 
+      FROM stocks 
+      WHERE id = :itemId 
+      LIMIT 1
+    `, {
+      replacements: { itemId },
+      type: QueryTypes.SELECT
+    });
+
+   
+    return res.json({
+      success: true,
+
+      item: itemInfo[0]?.item || "Unknown",
+      category: itemInfo[0]?.category || "",
+
+      cards: {
+        totalQty: Number(summary[0].totalQty),
+        stockValue: Number(summary[0].stockValue),
+        totalRevenue: Number(summary[0].totalRevenue),
+        totalInvoices: Number(summary[0].totalInvoices)
+      },
+
+      charts: {
+        stockTrend: stockChart,
+        revenueTrend: revenueChart
+      },
+
+      table: tableData.map(row => ({
+        date: row.date,
+        aging: row.aging,
+
+        invoiceNumber: row.invoiceNumber,
+        clientName: row.clientName,
+
+        branch: row.branch,
+
+        qty: Number(row.qty),
+        rate: Number(row.rate),
+        amount: Number(row.amount),
+
+        status: row.status
+      }))
+    });
+
+  } catch (err) {
+    console.error("❌ ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
     });
   }
 };
