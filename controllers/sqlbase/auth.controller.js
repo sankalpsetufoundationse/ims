@@ -1,9 +1,14 @@
 // const { User, Role } = require("../../model/SQL_Model"); 
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
+const { Op, fn, col, where } = require("sequelize");
 
+const { User, Role, Branch,Notification,
+  PasswordReset,
+  RecentActivity } = require("../../model/SQL_Model");
 
-const { User, Role, Branch } = require("../../model/SQL_Model");
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+
 
 exports.register = async (req, res) => {
   try {
@@ -149,5 +154,440 @@ exports.login = async (req, res) => {
   } catch (err) {
     console.error("LOGIN ERROR:", err);
     res.status(500).json({ error: err.message });
+  }
+};
+
+exports.requestPasswordReset = async (req, res) => {
+  try {
+    const email = req.body.email?.trim();
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required"
+      });
+    }
+
+    const user = await User.findOne({
+      where: {
+        email: {
+          [Op.iLike]: email
+        }
+      },
+      include: [
+        {
+          model: Role,
+          as: "role",
+          attributes: ["id", "name"],
+          required: false
+        },
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["id", "name"],
+          required: false
+        }
+      ]
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "User account is inactive"
+      });
+    }
+
+    if (user.role?.name === "super_admin") {
+      return res.status(400).json({
+        success: false,
+        message: "Super admin cannot use this reset flow"
+      });
+    }
+
+    await PasswordReset.update(
+      { status: "expired" },
+      {
+        where: {
+          user_id: user.id,
+          status: "pending",
+          expires_at: {
+            [Op.lt]: new Date()
+          }
+        }
+      }
+    );
+
+    const existingPending = await PasswordReset.findOne({
+      where: {
+        user_id: user.id,
+        status: "pending",
+        expires_at: {
+          [Op.gt]: new Date()
+        }
+      },
+      order: [["createdAt", "DESC"]]
+    });
+
+    if (existingPending) {
+      return res.status(400).json({
+        success: false,
+        message: "OTP already generated. Please contact super admin."
+      });
+    }
+
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    const resetRequest = await PasswordReset.create({
+      user_id: user.id,
+      branch_id: user.branch_id || null,
+      otp,
+      expires_at: expiresAt,
+      status: "pending"
+    });
+
+    const superAdmins = await User.findAll({
+      where: { is_active: true },
+      include: [
+        {
+          model: Role,
+          as: "role",
+          where: { name: "super_admin" },
+          attributes: ["id", "name"]
+        }
+      ]
+    });
+
+    if (superAdmins.length > 0) {
+      await Notification.bulkCreate(
+        superAdmins.map((admin) => ({
+          user_id: admin.id,
+          title: "Password Reset OTP Request",
+          message: `${user.name} (${user.email}) | Role: ${user.role?.name} | Branch: ${user.branch?.name || "N/A"} | OTP: ${otp}`,
+          type: "password_reset_request"
+        }))
+      );
+    }
+
+    await RecentActivity.create({
+      user_id: user.id,
+      action: "PASSWORD_RESET_REQUESTED",
+      details: `${user.name} (${user.email}) requested password reset. OTP sent to super admin.`,
+      ref_id: resetRequest.id,
+      ref_type: "password_reset"
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "OTP sent to super admin. Please contact super admin for OTP."
+    });
+  } catch (error) {
+    console.error("requestPasswordReset error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+      error: error.message
+    });
+  }
+};
+
+// =========================
+// VERIFY OTP
+// =========================
+exports.verifyPasswordResetOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and OTP are required"
+      });
+    }
+
+    const user = await User.findOne({
+      where: {
+        email: {
+          [Op.iLike]: email.trim()
+        }
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    const resetRequest = await PasswordReset.findOne({
+      where: {
+        user_id: user.id,
+        otp: String(otp).trim(),
+        status: "pending"
+      },
+      order: [["createdAt", "DESC"]]
+    });
+
+    if (!resetRequest) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP"
+      });
+    }
+
+    if (new Date(resetRequest.expires_at) < new Date()) {
+      resetRequest.status = "expired";
+      await resetRequest.save();
+
+      return res.status(400).json({
+        success: false,
+        message: "OTP expired"
+      });
+    }
+
+    resetRequest.status = "verified";
+    resetRequest.verified_at = new Date();
+    await resetRequest.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "OTP verified successfully",
+      reset_id: resetRequest.id
+    });
+  } catch (error) {
+    console.error("verifyPasswordResetOTP error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+      error: error.message
+    });
+  }
+};
+
+// =========================
+// RESET PASSWORD
+// =========================
+exports.resetPasswordWithOTP = async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Email, OTP and newPassword are required"
+      });
+    }
+
+    if (String(newPassword).trim().length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must be at least 6 characters"
+      });
+    }
+
+    const user = await User.findOne({
+      where: {
+        email: {
+          [Op.iLike]: email.trim()
+        }
+      },
+      include: [
+        {
+          model: Role,
+          as: "role",
+          attributes: ["name"],
+          required: false
+        },
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["name"],
+          required: false
+        }
+      ]
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "User account is inactive"
+      });
+    }
+
+    const resetRequest = await PasswordReset.findOne({
+      where: {
+        user_id: user.id,
+        otp: String(otp).trim(),
+        status: "verified"
+      },
+      order: [["createdAt", "DESC"]]
+    });
+
+    if (!resetRequest) {
+      return res.status(400).json({
+        success: false,
+        message: "OTP not verified or invalid"
+      });
+    }
+
+    if (new Date(resetRequest.expires_at) < new Date()) {
+      resetRequest.status = "expired";
+      await resetRequest.save();
+
+      return res.status(400).json({
+        success: false,
+        message: "OTP expired"
+      });
+    }
+
+    // password set -> model hook hash karega
+    user.password = String(newPassword).trim();
+    await user.save();
+
+    resetRequest.status = "used";
+    await resetRequest.save();
+
+    const superAdmins = await User.findAll({
+      where: { is_active: true },
+      include: [
+        {
+          model: Role,
+          as: "role",
+          where: { name: "super_admin" },
+          attributes: ["id", "name"]
+        }
+      ]
+    });
+
+    if (superAdmins.length > 0) {
+      await Notification.bulkCreate(
+        superAdmins.map((admin) => ({
+          user_id: admin.id,
+          title: "Password Reset Completed",
+          message: `${user.name} (${user.email}) | Role: ${user.role?.name || "N/A"} | Branch: ${user.branch?.name || "N/A"} has successfully reset password.`,
+          type: "password_reset_done"
+        }))
+      );
+    }
+
+    await RecentActivity.create({
+      user_id: user.id,
+      action: "PASSWORD_RESET_COMPLETED",
+      details: `${user.name} (${user.email}) reset password successfully.`,
+      ref_id: resetRequest.id,
+      ref_type: "password_reset"
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset successful"
+    });
+  } catch (error) {
+    console.error("resetPasswordWithOTP error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+      error: error.message
+    });
+  }
+};
+
+// =========================
+// MY NOTIFICATIONS
+// =========================
+exports.getMyNotifications = async (req, res) => {
+  try {
+    const notifications = await Notification.findAll({
+      where: { user_id: req.user.id },
+      order: [["createdAt", "DESC"]],
+      limit: 20
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: notifications
+    });
+  } catch (error) {
+    console.error("getMyNotifications error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch notifications",
+      error: error.message
+    });
+  }
+};
+
+
+exports.getRecentActivities = async (req, res) => {
+  try {
+    const activities = await RecentActivity.findAll({
+      order: [["createdAt", "DESC"]],
+      limit: 20
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: activities
+    });
+  } catch (error) {
+    console.error("getRecentActivities error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch recent activities",
+      error: error.message
+    });
+  }
+};
+
+// =========================
+// MARK NOTIFICATION READ
+// =========================
+exports.markNotificationRead = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const notification = await Notification.findOne({
+      where: {
+        id,
+        user_id: req.user.id
+      }
+    });
+
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: "Notification not found"
+      });
+    }
+
+    notification.is_read = true;
+    await notification.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Notification marked as read"
+    });
+  } catch (error) {
+    console.error("markNotificationRead error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update notification",
+      error: error.message
+    });
   }
 };
