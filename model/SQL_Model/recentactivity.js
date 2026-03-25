@@ -1,39 +1,39 @@
 const { DataTypes } = require("sequelize");
 const sequelize = require("../../config/sqlcon");
 
-const Notification = sequelize.define(
-  "Notification",
+const RecentActivity = sequelize.define(
+  "RecentActivity",
   {
     user_id: {
       type: DataTypes.INTEGER,
-      allowNull: false
+      allowNull: true
     },
 
-    title: {
+    action: {
       type: DataTypes.STRING,
       allowNull: false
     },
 
-    message: {
+    details: {
       type: DataTypes.TEXT,
       allowNull: false
     },
 
-    type: {
-      type: DataTypes.STRING,
-      defaultValue: "general"
+    ref_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
     },
 
-    is_read: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false
+    ref_type: {
+      type: DataTypes.STRING,
+      allowNull: true
     }
   },
   {
-    tableName: "notifications",
+    tableName: "recent_activities",
     underscored: true,
     timestamps: true
   }
 );
 
-module.exports = Notification;
+module.exports = RecentActivity;

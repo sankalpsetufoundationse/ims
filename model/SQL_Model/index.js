@@ -18,12 +18,10 @@ const {
 const Invoice = require("./invoice");
 const InvoiceItem = require("./InvoiceItem");
 
-
-// ================= STOCK =================
-
-Stock.hasMany(StockMovement, { foreignKey: "stock_id" });
-StockMovement.belongsTo(Stock, { foreignKey: "stock_id" });
-
+const Notification = require("./notification");
+const PasswordReset = require("./passwordreset");
+const RecentActivity = require("./recentactivity");
+const SystemSetting = require("./systemSetting"); // ✅ add this
 
 // ================= USER =================
 
@@ -33,6 +31,10 @@ Role.hasMany(User, { foreignKey: "role_id", as: "users" });
 Branch.hasMany(User, { foreignKey: "branch_id", as: "users" });
 User.belongsTo(Branch, { foreignKey: "branch_id", as: "branch" });
 
+// ================= STOCK MOVEMENT =================
+
+Stock.hasMany(StockMovement, { foreignKey: "stock_id", as: "movements" });
+StockMovement.belongsTo(Stock, { foreignKey: "stock_id", as: "stock" });
 
 // ================= STOCK =================
 
@@ -41,7 +43,6 @@ Stock.belongsTo(Branch, { foreignKey: "branch_id", as: "branch" });
 
 User.hasMany(Stock, { foreignKey: "owner_id", as: "stocks" });
 Stock.belongsTo(User, { foreignKey: "owner_id", as: "owner" });
-
 
 // ================= LEDGER =================
 
@@ -54,7 +55,6 @@ Ledger.belongsTo(Stock, { foreignKey: "stock_id", as: "stock" });
 User.hasMany(Ledger, { foreignKey: "created_by", as: "ledgerCreated" });
 Ledger.belongsTo(User, { foreignKey: "created_by", as: "creator" });
 
-
 // ================= CLIENT =================
 
 Branch.hasMany(Client, { foreignKey: "branch_id", as: "clients" });
@@ -66,7 +66,6 @@ ClientLedger.belongsTo(Client, { foreignKey: "client_id", as: "client" });
 Branch.hasMany(ClientLedger, { foreignKey: "branch_id", as: "clientLedger" });
 ClientLedger.belongsTo(Branch, { foreignKey: "branch_id", as: "branch" });
 
-
 // ================= QUOTATION =================
 
 Client.hasMany(Quotation, { foreignKey: "client_id", as: "quotations" });
@@ -77,14 +76,13 @@ Quotation.belongsTo(Branch, { foreignKey: "branch_id", as: "branch" });
 
 Quotation.hasMany(QuotationItem, {
   foreignKey: "quotation_id",
-  as: "quotationItems"   // ✅ changed
+  as: "quotationItems"
 });
 
 QuotationItem.belongsTo(Quotation, {
   foreignKey: "quotation_id",
   as: "quotation"
 });
-
 
 // ================= INVOICE =================
 
@@ -96,7 +94,7 @@ Invoice.belongsTo(Branch, { foreignKey: "branch_id", as: "branch" });
 
 Invoice.hasMany(InvoiceItem, {
   foreignKey: "invoice_id",
-  as: "invoiceItems"   // ✅ changed
+  as: "invoiceItems"
 });
 
 InvoiceItem.belongsTo(Invoice, {
@@ -104,14 +102,37 @@ InvoiceItem.belongsTo(Invoice, {
   as: "invoice"
 });
 
+// ================= PASSWORD RESET =================
+
+User.hasMany(PasswordReset, { foreignKey: "user_id", as: "passwordResets" });
+PasswordReset.belongsTo(User, { foreignKey: "user_id", as: "user" });
+
+Branch.hasMany(PasswordReset, { foreignKey: "branch_id", as: "passwordResets" });
+PasswordReset.belongsTo(Branch, { foreignKey: "branch_id", as: "branch" });
+
+// ================= NOTIFICATION =================
+
+User.hasMany(Notification, { foreignKey: "user_id", as: "notifications" });
+Notification.belongsTo(User, { foreignKey: "user_id", as: "user" });
+
+// ================= RECENT ACTIVITY =================
+
+User.hasMany(RecentActivity, { foreignKey: "user_id", as: "activities" });
+RecentActivity.belongsTo(User, { foreignKey: "user_id", as: "user" });
+
+// ================= SYSTEM SETTINGS =================
+
+User.hasMany(SystemSetting, { foreignKey: "created_by", as: "createdSettings" });
+User.hasMany(SystemSetting, { foreignKey: "updated_by", as: "updatedSettings" });
+
+SystemSetting.belongsTo(User, { foreignKey: "created_by", as: "creator" });
+SystemSetting.belongsTo(User, { foreignKey: "updated_by", as: "updater" });
 
 // ================= INIT DB =================
 
 const initDB = async () => {
   try {
     await sequelize.authenticate();
-
-    // Sync tables
     await sequelize.sync({ alter: true });
 
     console.log("✅ DB connected");
@@ -127,12 +148,11 @@ const initDB = async () => {
       "inventory_manager",
       "super_inventory_manager",
       "purchase_manager",
-       "sales_person",
+      "sales_person",
       "inventory_person",
       "finance"
     ];
 
-    // Insert roles only if not exists
     for (const name of roles) {
       await Role.findOrCreate({
         where: { name },
@@ -141,7 +161,6 @@ const initDB = async () => {
     }
 
     console.log("✅ Roles initialized");
-
   } catch (error) {
     console.error("❌ DB init error:", error);
   }
@@ -160,9 +179,15 @@ module.exports = {
   Client,
   ClientLedger,
   StockMovement,
+
   Quotation,
   QuotationItem,
 
   Invoice,
-  InvoiceItem
+  InvoiceItem,
+
+  Notification,
+  PasswordReset,
+  RecentActivity,
+  SystemSetting // ✅ fix export
 };

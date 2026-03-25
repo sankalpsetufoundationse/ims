@@ -21,6 +21,7 @@ const Ledger = sequelize.define("Ledger", {
       "TRANSFER_OUT",
       "DAMAGE",
       "ADJUSTMENT"
+  
     ),
     allowNull: false
   },

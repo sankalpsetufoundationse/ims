@@ -24,6 +24,11 @@ const User = sequelize.define(
       allowNull: false
     },
 
+    secure_password: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+
     role_id: {
       type: DataTypes.INTEGER,
       allowNull: false
@@ -55,10 +60,24 @@ const User = sequelize.define(
   }
 );
 
+// ========================
+// 🔐 HASH PASSWORD
+// ========================
 User.beforeCreate(async (user) => {
-  user.password = await bcrypt.hash(user.password, 10);
+  if (user.password) {
+    user.password = await bcrypt.hash(user.password, 10);
+  }
 });
 
+User.beforeUpdate(async (user) => {
+  if (user.changed("password")) {
+    user.password = await bcrypt.hash(user.password, 10);
+  }
+});
+
+// ========================
+// 🔑 VALIDATE PASSWORD
+// ========================
 User.prototype.validatePassword = function (password) {
   return bcrypt.compare(password, this.password);
 };
