@@ -26,7 +26,6 @@ const User = sequelize.define(
 
     secure_password: {
       type: DataTypes.TEXT,
-      allowNull: true
     },
 
     role_id: {
