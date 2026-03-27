@@ -12,7 +12,7 @@ const { initDB } = require("./model/SQL_Model");
 const corsOptions = {
   origin: [
     "http://localhost:3000", // React local
-    "http://192.168.1.13:3000", // Vite local
+    "http://localhost:5173", // Vite local
     "https://inventorysystem-opal.vercel.app" // production frontend
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
@@ -44,6 +44,8 @@ app.use('/ladger',require('./routes/sql/ladgerroute'))
  
 app.use('/sales',require('./routes/sql/sales'))
 app.use('/combine',require('./routes/sql/combineroute'))
+app.use("/system-setting", require("./routes/sql/systemSettingRoutes"));
+app.use('/getcsv',require('./routes/sql/csv'))
 // MongoDB Connection
 mongoose
   .connect(process.env.MONGO_URL)
