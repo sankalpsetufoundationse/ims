@@ -1967,11 +1967,11 @@ exports.getItemFullDetails = async (req, res) => {
 
     let { branchId, itemName } = req.params;
 
-    // 🔥 FIX: normalize types (VERY IMPORTANT)
+    // 🔥 normalize branch IDs
     const userBranches = (user.branches || []).map(b => Number(b));
     const requestedBranchId = Number(branchId);
 
-    // 🔐 Branch access control
+    // 🔐 branch access control
     if (!isSuperUser) {
       if (!userBranches.includes(requestedBranchId)) {
         return res.status(403).json({
@@ -1993,9 +1993,7 @@ exports.getItemFullDetails = async (req, res) => {
         FROM stocks
         WHERE branch_id = :branchId
         AND item = :itemName
-      `, {
-        replacements: { branchId: requestedBranchId, itemName }
-      })
+      `, { replacements: { branchId: requestedBranchId, itemName } })
     ]);
 
     // =========================
@@ -2029,12 +2027,10 @@ exports.getItemFullDetails = async (req, res) => {
 
       FROM ledger
       WHERE branch_id = :branchId
-    `, {
-      replacements: { branchId: requestedBranchId }
-    });
+    `, { replacements: { branchId: requestedBranchId } });
 
     // =========================
-    // AGING
+    // AGING CHART
     // =========================
     const agingChart = await sequelize.query(`
       SELECT 
@@ -2045,12 +2041,10 @@ exports.getItemFullDetails = async (req, res) => {
       AND item = :itemName
       GROUP BY aging
       ORDER BY aging ASC
-    `, {
-      replacements: { branchId: requestedBranchId, itemName }
-    });
+    `, { replacements: { branchId: requestedBranchId, itemName } });
 
     // =========================
-    // STATUS
+    // STATUS CHART
     // =========================
     const statusChart = await sequelize.query(`
       SELECT 
@@ -2060,12 +2054,10 @@ exports.getItemFullDetails = async (req, res) => {
       WHERE branch_id = :branchId
       AND item = :itemName
       GROUP BY status
-    `, {
-      replacements: { branchId: requestedBranchId, itemName }
-    });
+    `, { replacements: { branchId: requestedBranchId, itemName } });
 
     // =========================
-    // MONTHLY
+    // MONTHLY TREND
     // =========================
     const monthlyTrend = await sequelize.query(`
       SELECT 
@@ -2077,12 +2069,10 @@ exports.getItemFullDetails = async (req, res) => {
       AND item = :itemName
       GROUP BY month
       ORDER BY month ASC
-    `, {
-      replacements: { branchId: requestedBranchId, itemName }
-    });
+    `, { replacements: { branchId: requestedBranchId, itemName } });
 
     // =========================
-    // BATCH
+    // TOP BATCH / GRN
     // =========================
     const batchData = await sequelize.query(`
       SELECT 
@@ -2095,10 +2085,11 @@ exports.getItemFullDetails = async (req, res) => {
       GROUP BY batch_no
       ORDER BY value DESC
       LIMIT 5
-    `, {
-      replacements: { branchId: requestedBranchId, itemName }
-    });
+    `, { replacements: { branchId: requestedBranchId, itemName } });
 
+    // =========================
+    // FINAL RESPONSE
+    // =========================
     return res.json({
       success: true,
       item: itemName,
@@ -2106,13 +2097,10 @@ exports.getItemFullDetails = async (req, res) => {
 
       stats: {
         ...stats[0][0],
-
         stockIn: movement[0].stockIn,
         stockOut: movement[0].stockOut,
-
         purchaseQty: movement[0].purchaseQty,
         purchaseValue: movement[0].purchaseValue,
-
         salesQty: movement[0].salesQty,
         salesValue: movement[0].salesValue
       },
@@ -2134,7 +2122,6 @@ exports.getItemFullDetails = async (req, res) => {
     });
   }
 };
-
 exports.getCityBranchDashboard = async (req, res) => {
   try {
     const user = req.user;
