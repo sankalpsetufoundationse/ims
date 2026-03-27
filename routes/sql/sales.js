@@ -18,6 +18,7 @@ router.get("/ledger/:clientId", auth, checkRole(["sales_manager","admin","financ
 router.post('/gt/:id/convert-invoice',auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.convertQuotationToInvoice)
 router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin","super_sales_manager"]), salemanager.listQuotations);
 // router.get("/getsales",auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.getClientLedger)
+ 
 // router.get("/client-ledger/:clientId", auth, checkRole(["sales_manager","admin"]), salemanager.getClientLedgerDetails);
 router.get('/report-all',auth, checkRole(["sales_manager","admin","super_sales_manager"]), salemanager.reportandanalysis)
 router.put("/approve/:id",auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.approveQuotation);
@@ -36,7 +37,7 @@ router.get(
 );
 router.get(
   "/state",
-  auth,
+  auth, 
   checkRole(["admin","sales_manager","super_sales_manager"]),
   salemanager.getStateWiseSales
 );
@@ -44,5 +45,6 @@ router.get('/getstate',auth, checkRole(["admin","sales_manager","super_sales_man
 router.get('/getstate/:state',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getStateDashboard)
 router.get('/branch/:branchId',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getBranchDashboard)
 router.get('/dashboard/item/:itemId',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getItemDashboard )
+router.get('/invoice/:id',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getInvoicePDF )
 
 module.exports=router;
