@@ -70,7 +70,7 @@ const auth = async (req, res, next) => {
       branches,
     };
 
-    console.log("✅ FINAL USER:", req.user);
+    console.log(" FINAL USER:", req.user);
 
     next();
 
