@@ -73,6 +73,11 @@ router.get('/d/report',auth,checkRole(['super_admin',"admin"]),admincontroller.g
 router.get("/branch/:branchId/item/:stockId/dashboard",auth,checkRole(['super_admin',"admin"]),admincontroller.getItemDashboard)
 router.patch("/users/:id/toggle-status",auth,checkRole(['super_admin',"admin"]),admincontroller.toggleUserStatus);
 // 
-router.get("/d/get-branch-user", auth,checkRole(['admin','super_admin']),admincontroller.getBranchUsersWithPassword);
+router.get("/d/get-branch-user/:branch_id", auth,checkRole(['admin','super_admin']),admincontroller.getBranchUsersWithPassword);
 router.post('/update-pass',auth,checkRole(['admin','super_admin']),admincontroller.resetUserPassword)
+router.put(
+  "/branch/:id/toggle",
+ auth,checkRole(['admin','super_admin']),
+  admincontroller.toggleBranchStatus
+);
 module.exports = router;
