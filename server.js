@@ -44,7 +44,7 @@ app.use('/ladger',require('./routes/sql/ladgerroute'))
  
 app.use('/sales',require('./routes/sql/sales'))
 app.use('/combine',require('./routes/sql/combineroute'))
-app.use("/system-setting", require("./routes/sql/systemSettingRoutes"));
+
 app.use('/getcsv',require('./routes/sql/csv'))
 // MongoDB Connection
 mongoose
