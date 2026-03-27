@@ -1951,7 +1951,8 @@ exports.getItemFullDetails = async (req, res) => {
      "super_stock_manager",
       "super_admin",
       "super_sales_manager",
-      "super_inventory_manager"
+      "super_inventory_manager",
+      "admin"
     ];
 
     const role = user?.role?.toLowerCase().trim();
@@ -2136,7 +2137,8 @@ exports.getCityBranchDashboard = async (req, res) => {
       "super_stock_manager",
       "super_admin",
       "super_sales_manager",
-      "super_inventory_manager"
+      "super_inventory_manager",
+      "admin"
     ];
 
     const role = user?.role?.toLowerCase().trim();
