@@ -1948,7 +1948,7 @@ exports.getItemFullDetails = async (req, res) => {
     const user = req.user;
 
     const SUPER_ROLES = [
-     "super_stock_manager",
+      "super_stock_manager",
       "super_admin",
       "super_sales_manager",
       "super_inventory_manager",
@@ -1956,15 +1956,30 @@ exports.getItemFullDetails = async (req, res) => {
     ];
 
     const role = user?.role?.toLowerCase().trim();
+    const isSuperUser = SUPER_ROLES.includes(role);
 
-    if (!SUPER_ROLES.includes(role)) {
+    if (!role) {
       return res.status(403).json({
         success: false,
-        message: "Access Denied"
+        message: "Invalid Role"
       });
     }
 
-    const { branchId, itemName } = req.params;
+    let { branchId, itemName } = req.params;
+
+    // 🔥 FIX: normalize types (VERY IMPORTANT)
+    const userBranches = (user.branches || []).map(b => Number(b));
+    const requestedBranchId = Number(branchId);
+
+    // 🔐 Branch access control
+    if (!isSuperUser) {
+      if (!userBranches.includes(requestedBranchId)) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only access your own branch data"
+        });
+      }
+    }
 
     // =========================
     // BASIC STATS
@@ -1979,27 +1994,23 @@ exports.getItemFullDetails = async (req, res) => {
         WHERE branch_id = :branchId
         AND item = :itemName
       `, {
-        replacements: { branchId, itemName }
+        replacements: { branchId: requestedBranchId, itemName }
       })
     ]);
 
     // =========================
-    // STOCK MOVEMENT (LEDGER)
+    // STOCK MOVEMENT
     // =========================
     const [movement] = await sequelize.query(`
-      SELECT
-
-        -- STOCK IN
+      SELECT 
         COALESCE(SUM(
           CASE WHEN type IN ('PURCHASE','TRANSFER_IN') THEN quantity ELSE 0 END
         ),0) AS "stockIn",
 
-        -- STOCK OUT
         COALESCE(SUM(
           CASE WHEN type IN ('SALE','TRANSFER_OUT','DAMAGE') THEN quantity ELSE 0 END
         ),0) AS "stockOut",
 
-        -- PURCHASE
         COALESCE(SUM(
           CASE WHEN type='PURCHASE' THEN quantity ELSE 0 END
         ),0) AS "purchaseQty",
@@ -2008,7 +2019,6 @@ exports.getItemFullDetails = async (req, res) => {
           CASE WHEN type='PURCHASE' THEN total ELSE 0 END
         ),0) AS "purchaseValue",
 
-        -- SALES
         COALESCE(SUM(
           CASE WHEN type='SALE' THEN quantity ELSE 0 END
         ),0) AS "salesQty",
@@ -2020,11 +2030,11 @@ exports.getItemFullDetails = async (req, res) => {
       FROM ledger
       WHERE branch_id = :branchId
     `, {
-      replacements: { branchId }
+      replacements: { branchId: requestedBranchId }
     });
 
     // =========================
-    // AGING DISTRIBUTION
+    // AGING
     // =========================
     const agingChart = await sequelize.query(`
       SELECT 
@@ -2036,11 +2046,11 @@ exports.getItemFullDetails = async (req, res) => {
       GROUP BY aging
       ORDER BY aging ASC
     `, {
-      replacements: { branchId, itemName }
+      replacements: { branchId: requestedBranchId, itemName }
     });
 
     // =========================
-    // STATUS DISTRIBUTION
+    // STATUS
     // =========================
     const statusChart = await sequelize.query(`
       SELECT 
@@ -2051,11 +2061,11 @@ exports.getItemFullDetails = async (req, res) => {
       AND item = :itemName
       GROUP BY status
     `, {
-      replacements: { branchId, itemName }
+      replacements: { branchId: requestedBranchId, itemName }
     });
 
     // =========================
-    // MONTHLY TREND
+    // MONTHLY
     // =========================
     const monthlyTrend = await sequelize.query(`
       SELECT 
@@ -2068,11 +2078,11 @@ exports.getItemFullDetails = async (req, res) => {
       GROUP BY month
       ORDER BY month ASC
     `, {
-      replacements: { branchId, itemName }
+      replacements: { branchId: requestedBranchId, itemName }
     });
 
     // =========================
-    // TOP BATCH / GRN (ADVANCED)
+    // BATCH
     // =========================
     const batchData = await sequelize.query(`
       SELECT 
@@ -2086,17 +2096,13 @@ exports.getItemFullDetails = async (req, res) => {
       ORDER BY value DESC
       LIMIT 5
     `, {
-      replacements: { branchId, itemName }
+      replacements: { branchId: requestedBranchId, itemName }
     });
 
-    // =========================
-    // FINAL RESPONSE
-    // =========================
     return res.json({
       success: true,
-
       item: itemName,
-      branchId,
+      branchId: requestedBranchId,
 
       stats: {
         ...stats[0][0],
