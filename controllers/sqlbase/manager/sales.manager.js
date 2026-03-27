@@ -3172,3 +3172,37 @@ exports.getItemDashboard = async (req, res) => {
     });
   }
 };
+exports.getInvoicePDF = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const invoice = await Invoice.findByPk(id);
+    if (!invoice) {
+      return res.status(404).json({ error: "Invoice not found" });
+    }
+
+    const items = await InvoiceItem.findAll({
+      where: { invoice_id: id }
+    });
+
+    const client = await Client.findByPk(invoice.client_id);
+    const branch = await Branch.findByPk(invoice.branch_id);
+
+    const pdf = await generateGSTInvoicePDF({
+      branch,
+      invoice,
+      client,
+      items
+    });
+
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename=${invoice.invoice_no}.pdf`
+    });
+
+    res.send(pdf);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
