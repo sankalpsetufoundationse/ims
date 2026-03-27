@@ -136,9 +136,35 @@ exports.createBranch = async (req, res) => {
 
 exports.getBranchUsersWithPassword = async (req, res) => {
   try {
-    // 🔐 only super admin
-    if (req.user.role !== "super_admin") {
-      return res.status(403).json({ error: "Access denied" });
+    const role = req.user?.role?.name || req.user?.role || "";
+
+    if (role !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        error: "Access denied"
+      });
+    }
+
+    const rawBranchId = req.params.branch_id;
+    const branchId = rawBranchId ? Number(rawBranchId) : null;
+
+    if (branchId !== null && isNaN(branchId)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid branch_id"
+      });
+    }
+
+    const where = {
+      "$role.name$": [
+        "admin",
+        "sales_manager",
+        "inventory_manager"
+      ]
+    };
+
+    if (branchId !== null) {
+      where.branch_id = branchId;
     }
 
     const users = await User.findAll({
@@ -149,35 +175,42 @@ exports.getBranchUsersWithPassword = async (req, res) => {
           attributes: ["name"]
         }
       ],
-      where: {
-        "$role.name$": [
-          "admin",
-          "sales_manager",
-          "inventory_manager"
-        ]
-      },
+      where,
+      attributes: [
+        "id",
+        "name",
+        "email",
+        "branch_id",
+        "secure_password"
+      ],
       raw: true,
       nest: true
     });
 
-    const result = users.map(u => ({
+    const result = users.map((u) => ({
       id: u.id,
       name: u.name,
       email: u.email,
-      role: u.role.name,
+      role: u.role?.name || null,
       branch_id: u.branch_id,
       password: u.secure_password
         ? decryptPassword(u.secure_password)
         : null
     }));
 
-    res.json(result);
-
+    return res.json({
+      success: true,
+      branch_id: branchId,
+      total: result.length,
+      users: result
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 };
-
 exports.resetUserPassword = async (req, res) => {
   try {
     if (req.user.role !== "super_admin") {
@@ -1835,6 +1868,59 @@ exports.getItemDashboard = async (req, res) => {
     console.error("ERROR:", err);
     return res.status(500).json({
       error: err.message,
+    });
+  }
+};
+
+exports.toggleBranchStatus = async (req, res) => {
+  try {
+    let { id } = req.params;
+
+    console.log("👉 Incoming ID:", id);
+
+    // ✅ FORCE NUMBER
+    id = Number(id);
+
+    if (!id || isNaN(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid branch id"
+      });
+    }
+
+    const branch = await Branch.findByPk(id);
+
+    console.log("👉 Found Branch:", branch);
+
+    if (!branch) {
+      return res.status(404).json({
+        success: false,
+        message: "Branch not found"
+      });
+    }
+
+    // 🔁 TOGGLE
+    const newStatus =
+      branch.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+
+    branch.status = newStatus;
+    await branch.save();
+
+    return res.json({
+      success: true,
+      message:
+        newStatus === "ACTIVE"
+          ? "Branch Activated successfully"
+          : "Branch Deactivated successfully",
+      branch
+    });
+
+  } catch (err) {
+    console.error("❌ ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 };
