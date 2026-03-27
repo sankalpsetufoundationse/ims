@@ -15,7 +15,7 @@ router.post("/ledger/sale", auth, checkRole(["sales_manager","admin"]), salemana
 router.post("/ledger/payment", auth, checkRole(["sales_manager","admin","finance"]), salemanager.addClientPayment);
 
 router.get("/ledger/:clientId", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin","super_sales_manager"]), salemanager.getClientLedger);
-router.post('/gt/:id',auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.convertQuotationToInvoice)
+router.post('/gt/:id/convert-invoice',auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.convertQuotationToInvoice)
 router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin","super_sales_manager"]), salemanager.listQuotations);
 // router.get("/getsales",auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.getClientLedger)
 // router.get("/client-ledger/:clientId", auth, checkRole(["sales_manager","admin"]), salemanager.getClientLedgerDetails);
@@ -24,9 +24,9 @@ router.put("/approve/:id",auth,checkRole(["sales_manager","super_admin", "super_
 router.get('/dashbord',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getAdvancedSalesAnalytics)
 
 //Ladger-screen-entries
-router.get('/get-ladger',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getClientLedgerSummary)
+router.get('/get-ladger',auth,checkRole(["sales_manager","super_admin", "super_sales_manager","inventory_manager","super_inventory_manager"]),salemanager.getClientLedgerSummary)
 //Ladger-screen-entries
-router.get('/get-ladger/:clientId',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getClientLedgerDetails)
+router.get('/get-ladger/:clientId',auth,checkRole(["sales_manager","super_admin", "super_sales_manager","inventory_manager","super_inventory_manager"]),salemanager.getClientLedgerDetails)
 router.get('/get-invoice',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getInvoiceDashboard)
 router.get(
   "/state/:state",
