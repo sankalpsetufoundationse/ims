@@ -5,7 +5,7 @@ const { Op } = require("sequelize");
 
 const Stock = require("../../model/SQL_Model/stock.record");
 const Branch = require("../../model/SQL_Model/branch");
-
+const User=require('../../model/SQL_Model/user')
 
 exports.exportStockAgingExcel = async (req, res) => {
   try {
@@ -329,7 +329,7 @@ exports.exportInventoryExcel = async (req, res) => {
   }
 };
 exports.getReportsAnalyticsDashboard = async (req, res) => {
- 
+ };
  
 exports.exportReportsAnalyticsCSV = async (req, res) => {
   try {
@@ -456,7 +456,7 @@ exports.exportReportsAnalyticsCSV = async (req, res) => {
     });
   }
 };
-};
+
 
 exports.exportClientsExcel = async (req, res) => {
   try {
@@ -595,3 +595,566 @@ exports.exportClientsExcel = async (req, res) => {
     });
   }
 };
+
+exports.exportUsersExcel = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const role = user?.role || user?.role?.name;
+    const userBranches = user?.branches || [];
+
+    if (!userBranches.length) {
+      return res.status(403).json({
+        success: false,
+        message: "No branch access"
+      });
+    }
+
+    // =========================
+    // 👑 SUPER USER CHECK
+    // =========================
+    const isSuperUser =
+      userBranches.includes("ALL") || role === "super_admin";
+
+    let whereCondition = {};
+
+    if (!isSuperUser) {
+      if (user.branch_id) {
+        whereCondition.branch_id = user.branch_id;
+      } else {
+        whereCondition.branch_id = {
+          [Op.in]: userBranches
+        };
+      }
+    }
+
+    // =========================
+    // 📦 FETCH USERS
+    // =========================
+    const users = await User.findAll({
+      where: whereCondition,
+      attributes: [
+        "id",
+        "name",
+        "email",
+        "secure_password",
+        "branch_id",
+        "created_at",
+        "last_login",
+        "is_active"
+      ],
+      include: [
+        {
+          association: "role",
+          attributes: ["name"]
+        },
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["name", "location"]
+        }
+      ],
+      order: [["created_at", "DESC"]]
+    });
+
+    if (!users.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No users found"
+      });
+    }
+
+    // =========================
+    // 📊 EXCEL START
+    // =========================
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Users Report");
+
+    // 🔥 TOP INFO
+    worksheet.addRow(["User Role:", role]);
+    worksheet.addRow([
+      "Branch Access:",
+      isSuperUser ? "ALL BRANCHES" : userBranches.join(", ")
+    ]);
+    worksheet.addRow(["Generated At:", new Date().toLocaleString()]);
+    worksheet.addRow([]);
+
+    // =========================
+    // 🔥 HEADER
+    // =========================
+    worksheet.columns = [
+      { header: "Name", key: "name", width: 25 },
+      { header: "Email", key: "email", width: 30 },
+      { header: "Role", key: "role", width: 20 },
+      { header: "Branch", key: "branch", width: 25 },
+      { header: "Location", key: "location", width: 25 },
+      { header: "Secure Password", key: "secure_password", width: 30 },
+      { header: "Status", key: "status", width: 15 },
+      { header: "Aging (Days)", key: "aging", width: 15 },
+      { header: "Last Login", key: "last_login", width: 25 }
+    ];
+
+    // 🔥 HEADER STYLE
+    worksheet.getRow(5).font = { bold: true };
+
+    // =========================
+    // 📥 DATA
+    // =========================
+    let activeCount = 0;
+    let inactiveCount = 0;
+
+    users.forEach((u) => {
+      const aging = Math.floor(
+        (Date.now() - new Date(u.created_at)) /
+        (1000 * 60 * 60 * 24)
+      );
+
+      if (u.is_active) activeCount++;
+      else inactiveCount++;
+
+      worksheet.addRow({
+        name: u.name || "",
+        email: u.email || "",
+        role: u.role?.name || "",
+        branch: u.branch?.name || "",
+        location: u.branch?.location || "",
+        secure_password: u.secure_password || "",
+        status: u.is_active ? "Active" : "Inactive",
+        aging,
+        last_login: u.last_login || ""
+      });
+    });
+
+    // =========================
+    // 📊 SUMMARY
+    // =========================
+    worksheet.addRow([]);
+    worksheet.addRow({
+      name: "TOTAL USERS",
+      email: users.length
+    });
+
+    worksheet.addRow({
+      name: "ACTIVE USERS",
+      email: activeCount
+    });
+
+    worksheet.addRow({
+      name: "INACTIVE USERS",
+      email: inactiveCount
+    });
+
+    // =========================
+    // 📥 DOWNLOAD
+    // =========================
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=users-report-${Date.now()}.xlsx`
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+
+  } catch (err) {
+    console.error("❌ USER EXPORT ERROR:", err);
+
+    res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+const REPORT_MAP = {
+  users: exports.exportUsersExcel,
+  clients: exports.exportClientsExcel,
+  inventory: exports.exportInventoryExcel
+};
+
+exports.downloadReport = async (req, res) => {
+  try {
+    const { type } = req.query;
+
+    if (!type) {
+      return res.status(400).json({
+        success: false,
+        message: "Report type is required"
+      });
+    }
+
+    const handler = REPORT_MAP[type];
+
+    if (!handler) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid report type"
+      });
+    }
+
+    return handler(req, res);
+
+  } catch (err) {
+    console.error("DOWNLOAD ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.exportSalesExcel = async (req, res) => {
+  try {
+    let role = req.user?.role || "";
+    if (typeof role === "object") role = role.name;
+
+    const branchId = req.user?.branch_id || null;
+    const userBranches = req.user?.branches || [];
+    const isSuperSales =
+      role === "super_sales_manager" ||
+      role === "super_admin" ||
+      userBranches.includes("ALL");
+
+    const whereClause = isSuperSales
+      ? ""
+      : branchId
+      ? `WHERE q.branch_id = ${branchId}`
+      : "";
+
+    // ===============================
+    // 🔹 SALES SUMMARY
+    // ===============================
+    const [salesSummary] = await sequelize.query(`
+      SELECT 
+        q.branch_id AS "branchId",
+        q.quotation_no AS "quotationNo",
+        c.name AS "clientName",
+        q.total_amount AS "totalAmount",
+        q.status,
+        TO_CHAR(q."createdAt",'DD-MM-YYYY HH24:MI') AS "createdAt"
+      FROM quotations q
+      LEFT JOIN clients c ON c.id = q.client_id
+      ${whereClause}
+      ORDER BY q."createdAt" DESC
+    `);
+
+    // ===============================
+    // 🔹 TOP PRODUCTS
+    // ===============================
+    const [topProducts] = await sequelize.query(`
+      SELECT 
+        q.branch_id AS "branchId",
+        qi.product_name AS "productName",
+        SUM(qi.quantity) AS "totalQty",
+        SUM(qi.amount) AS "totalRevenue"
+      FROM quotation_items qi
+      JOIN quotations q ON q.id = qi.quotation_id
+      ${isSuperSales ? "" : branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+      GROUP BY q.branch_id, qi.product_name
+      ORDER BY "totalQty" DESC
+    `);
+
+    if (!salesSummary.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No sales data found"
+      });
+    }
+
+    // ===============================
+    // 📘 EXCEL START
+    // ===============================
+    const workbook = new ExcelJS.Workbook();
+
+    // ===============================
+    // 📄 SHEET 1: SALES REPORT
+    // ===============================
+    const salesSheet = workbook.addWorksheet("Sales Report");
+
+    salesSheet.addRow(["User Role:", role]);
+    salesSheet.addRow([
+      "Branch Access:",
+      isSuperSales ? "ALL BRANCHES" : branchId
+    ]);
+    salesSheet.addRow(["Generated At:", new Date().toLocaleString()]);
+    salesSheet.addRow([]);
+
+    salesSheet.columns = [
+      { header: "Branch ID", key: "branchId", width: 15 },
+      { header: "Quotation No", key: "quotationNo", width: 20 },
+      { header: "Client Name", key: "clientName", width: 25 },
+      { header: "Total Amount", key: "totalAmount", width: 18 },
+      { header: "Status", key: "status", width: 18 },
+      { header: "Created At", key: "createdAt", width: 22 }
+    ];
+
+    salesSheet.getRow(5).font = { bold: true };
+
+    salesSummary.forEach((row) => {
+      salesSheet.addRow({
+        branchId: row.branchId,
+        quotationNo: row.quotationNo,
+        clientName: row.clientName || "",
+        totalAmount: row.totalAmount || 0,
+        status: row.status || "",
+        createdAt: row.createdAt || ""
+      });
+    });
+
+    const totalSalesAmount = salesSummary.reduce(
+      (sum, row) => sum + Number(row.totalAmount || 0),
+      0
+    );
+
+    salesSheet.addRow([]);
+    salesSheet.addRow({
+      quotationNo: "TOTAL SALES",
+      totalAmount: totalSalesAmount
+    });
+
+    // ===============================
+    // 📄 SHEET 2: TOP PRODUCTS
+    // ===============================
+    const productSheet = workbook.addWorksheet("Top Products");
+
+    productSheet.addRow(["User Role:", role]);
+    productSheet.addRow([
+      "Branch Access:",
+      isSuperSales ? "ALL BRANCHES" : branchId
+    ]);
+    productSheet.addRow(["Generated At:", new Date().toLocaleString()]);
+    productSheet.addRow([]);
+
+    productSheet.columns = [
+      { header: "Branch ID", key: "branchId", width: 15 },
+      { header: "Product Name", key: "productName", width: 30 },
+      { header: "Total Qty Sold", key: "totalQty", width: 18 },
+      { header: "Total Revenue", key: "totalRevenue", width: 20 }
+    ];
+
+    productSheet.getRow(5).font = { bold: true };
+
+    topProducts.forEach((row) => {
+      productSheet.addRow({
+        branchId: row.branchId,
+        productName: row.productName || "",
+        totalQty: row.totalQty || 0,
+        totalRevenue: row.totalRevenue || 0
+      });
+    });
+
+    const totalProductRevenue = topProducts.reduce(
+      (sum, row) => sum + Number(row.totalRevenue || 0),
+      0
+    );
+
+    productSheet.addRow([]);
+    productSheet.addRow({
+      productName: "TOTAL PRODUCT REVENUE",
+      totalRevenue: totalProductRevenue
+    });
+
+    // ===============================
+    // 📥 DOWNLOAD
+    // ===============================
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=sales-report-${Date.now()}.xlsx`
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+
+  } catch (err) {
+    console.error("❌ SALES EXCEL EXPORT ERROR:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+
+
+// exports.exportSalesExcel = async (req, res) => {
+//   try {
+//     let role = req.user?.role || "";
+//     if (typeof role === "object") role = role.name;
+
+//     const branchId = req.user?.branch_id || null;
+//     const userBranches = req.user?.branches || [];
+//     const isSuperSales =
+//       role === "super_sales_manager" ||
+//       role === "super_admin" ||
+//       userBranches.includes("ALL");
+
+//     const whereClause = isSuperSales
+//       ? ""
+//       : branchId
+//       ? `WHERE i.branch_id = ${branchId}`
+//       : "";
+
+//     // ===============================
+//     // 🔹 SALES SUMMARY (ACTUAL SALES)
+//     // ===============================
+//     const [salesSummary] = await sequelize.query(`
+//       SELECT 
+//         i.branch_id AS "branchId",
+//         i.invoice_no AS "invoiceNo",
+//         c.name AS "clientName",
+//         COALESCE(i.total_amount, 0) AS "totalAmount",
+//         COALESCE(i.status, 'invoiced') AS "status",
+//         TO_CHAR(i."createdAt",'DD-MM-YYYY HH24:MI') AS "createdAt"
+//       FROM invoices i
+//       LEFT JOIN clients c ON c.id = i.client_id
+//       ${whereClause}
+//       ORDER BY i."createdAt" DESC
+//     `);
+
+//     // ===============================
+//     // 🔹 TOP PRODUCTS (ACTUAL SOLD ITEMS)
+//     // ===============================
+//     const [topProducts] = await sequelize.query(`
+//       SELECT 
+//         i.branch_id AS "branchId",
+//         COALESCE(s.name, s.item_name, s.product_name, CONCAT('Stock #', ii.stock_id)) AS "productName",
+//         COALESCE(SUM(ii.quantity), 0) AS "totalQty",
+//         COALESCE(SUM(ii.total), 0) AS "totalRevenue"
+//       FROM invoice_items ii
+//       JOIN invoices i ON i.id = ii.invoice_id
+//       LEFT JOIN stocks s ON s.id = ii.stock_id
+//       ${isSuperSales ? "" : branchId ? `WHERE i.branch_id = ${branchId}` : ""}
+//       GROUP BY i.branch_id, s.name, s.item_name, s.product_name, ii.stock_id
+//       ORDER BY "totalQty" DESC
+//     `);
+
+//     if (!salesSummary.length) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "No sales data found"
+//       });
+//     }
+
+//     // ===============================
+//     // 📘 EXCEL START
+//     // ===============================
+//     const workbook = new ExcelJS.Workbook();
+
+//     // ===============================
+//     // 📄 SHEET 1: SALES REPORT
+//     // ===============================
+//     const salesSheet = workbook.addWorksheet("Sales Report");
+
+//     salesSheet.addRow(["User Role:", role]);
+//     salesSheet.addRow([
+//       "Branch Access:",
+//       isSuperSales ? "ALL BRANCHES" : branchId
+//     ]);
+//     salesSheet.addRow(["Generated At:", new Date().toLocaleString()]);
+//     salesSheet.addRow([]);
+
+//     salesSheet.columns = [
+//       { header: "Branch ID", key: "branchId", width: 15 },
+//       { header: "Invoice No", key: "invoiceNo", width: 20 },
+//       { header: "Client Name", key: "clientName", width: 25 },
+//       { header: "Total Amount", key: "totalAmount", width: 18 },
+//       { header: "Status", key: "status", width: 18 },
+//       { header: "Created At", key: "createdAt", width: 22 }
+//     ];
+
+//     salesSheet.getRow(5).font = { bold: true };
+
+//     salesSummary.forEach((row) => {
+//       salesSheet.addRow({
+//         branchId: row.branchId,
+//         invoiceNo: row.invoiceNo,
+//         clientName: row.clientName || "",
+//         totalAmount: Number(row.totalAmount || 0),
+//         status: row.status || "",
+//         createdAt: row.createdAt || ""
+//       });
+//     });
+
+//     const totalSalesAmount = salesSummary.reduce(
+//       (sum, row) => sum + Number(row.totalAmount || 0),
+//       0
+//     );
+
+//     salesSheet.addRow([]);
+//     salesSheet.addRow({
+//       invoiceNo: "TOTAL SALES",
+//       totalAmount: totalSalesAmount
+//     });
+
+//     // ===============================
+//     // 📄 SHEET 2: TOP PRODUCTS
+//     // ===============================
+//     const productSheet = workbook.addWorksheet("Top Products");
+
+//     productSheet.addRow(["User Role:", role]);
+//     productSheet.addRow([
+//       "Branch Access:",
+//       isSuperSales ? "ALL BRANCHES" : branchId
+//     ]);
+//     productSheet.addRow(["Generated At:", new Date().toLocaleString()]);
+//     productSheet.addRow([]);
+
+//     productSheet.columns = [
+//       { header: "Branch ID", key: "branchId", width: 15 },
+//       { header: "Product Name", key: "productName", width: 30 },
+//       { header: "Total Qty Sold", key: "totalQty", width: 18 },
+//       { header: "Total Revenue", key: "totalRevenue", width: 20 }
+//     ];
+
+//     productSheet.getRow(5).font = { bold: true };
+
+//     topProducts.forEach((row) => {
+//       productSheet.addRow({
+//         branchId: row.branchId,
+//         productName: row.productName || "",
+//         totalQty: Number(row.totalQty || 0),
+//         totalRevenue: Number(row.totalRevenue || 0)
+//       });
+//     });
+
+//     const totalProductRevenue = topProducts.reduce(
+//       (sum, row) => sum + Number(row.totalRevenue || 0),
+//       0
+//     );
+
+//     productSheet.addRow([]);
+//     productSheet.addRow({
+//       productName: "TOTAL PRODUCT REVENUE",
+//       totalRevenue: totalProductRevenue
+//     });
+
+//     // ===============================
+//     // 📥 DOWNLOAD
+//     // ===============================
+//     res.setHeader(
+//       "Content-Type",
+//       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+//     );
+
+//     res.setHeader(
+//       "Content-Disposition",
+//       `attachment; filename=sales-report-${Date.now()}.xlsx`
+//     );
+
+//     await workbook.xlsx.write(res);
+//     res.end();
+
+//   } catch (err) {
+//     console.error("❌ SALES EXCEL EXPORT ERROR:", err);
+//     res.status(500).json({
+//       success: false,
+//       message: err.message
+//     });
+//   }
+// };
