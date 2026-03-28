@@ -21,6 +21,126 @@ const { quotationHTML } = require("../../../utils/qt");
 const { invoiceHTML } = require("../../../utils/invoice");
 const { generateIRN } = require("../../../utils/taxproService");
 const { generateEinvoicePayload } = require("../../../utils/einvoicePayload");
+
+
+async function createInvoiceFromQuotation(quotationId, transaction) {
+  const quotation = await Quotation.findByPk(quotationId, {
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+
+  if (!quotation) {
+    throw new Error("Quotation not found");
+  }
+
+  const items = await QuotationItem.findAll({
+    where: { quotation_id: quotationId },
+    transaction
+  });
+
+  if (!items.length) {
+    throw new Error("No quotation items found");
+  }
+
+  const client = await Client.findByPk(quotation.client_id, { transaction });
+  const branch = await Branch.findByPk(quotation.branch_id, { transaction });
+
+  if (!client || !branch) {
+    throw new Error("Client or Branch not found");
+  }
+
+  let invoice = await Invoice.findOne({
+    where: { quotation_id: quotation.id },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+
+  if (!invoice) {
+    invoice = await Invoice.create({
+      quotation_id: quotation.id,
+      quotation_no: quotation.quotation_no,
+      client_id: quotation.client_id,
+      branch_id: quotation.branch_id,
+      invoice_no: `INV-${quotation.quotation_no}`,
+      total_amount: quotation.total_amount,
+      gst_amount: quotation.gst_amount,
+      status: "draft"
+    }, { transaction });
+  }
+
+  // Copy quotation items to invoice items only once
+  const existingCount = await InvoiceItem.count({
+    where: { invoice_id: invoice.id },
+    transaction
+  });
+
+  if (existingCount === 0) {
+    for (const item of items) {
+      await InvoiceItem.create({
+        invoice_id: invoice.id,
+        product_name: item.product_name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        unit: item.unit || "",
+        hsn: item.hsn || "",
+        subtotal: item.subtotal || 0,
+        amount: item.amount || 0
+      }, { transaction });
+    }
+  }
+
+  // Stock cut + ledger + client ledger only once
+  if (invoice.status !== "final") {
+    for (const it of items) {
+      const stock = await Stock.findOne({
+        where: {
+          item: it.product_name,
+          branch_id: quotation.branch_id
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+
+      if (!stock) {
+        throw new Error(`Stock not found for item: ${it.product_name}`);
+      }
+
+      if (Number(stock.quantity) < Number(it.quantity)) {
+        throw new Error(`Insufficient stock for item: ${it.product_name}`);
+      }
+
+      stock.quantity = Number(stock.quantity) - Number(it.quantity);
+      await stock.save({ transaction });
+
+      await Ledger.create({
+        branch_id: quotation.branch_id,
+        stock_id: stock.id,
+        type: "SALE",
+        quantity: it.quantity,
+        rate: it.unit_price,
+        total: it.subtotal || it.amount || 0,
+        reference_no: invoice.invoice_no
+      }, { transaction });
+    }
+
+    await ClientLedger.create({
+      client_id: quotation.client_id,
+      branch_id: quotation.branch_id,
+      type: "SALE",
+      amount: quotation.total_amount,
+      invoice_no: invoice.invoice_no,
+      remark: "Invoice"
+    }, { transaction });
+
+    invoice.status = "final";
+    await invoice.save({ transaction });
+
+    quotation.status = "invoiced";
+    await quotation.save({ transaction });
+  }
+
+  return { invoice, quotation, client, branch };
+}
 const getOrCreateClient = async (data, t) => {
 
   let client = await Client.findOne({
@@ -407,152 +527,487 @@ exports.createQuotation = async (req, res) => {
 
 
 
-const generateGSTInvoicePDF = ({ branch, invoice, client, items }) => {
+async function createInvoiceFromQuotation(quotationId, transaction) {
+  const quotation = await Quotation.findByPk(quotationId, {
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+
+  if (!quotation) {
+    throw new Error("Quotation not found");
+  }
+
+  const items = await QuotationItem.findAll({
+    where: { quotation_id: quotationId },
+    transaction
+  });
+
+  if (!items.length) {
+    throw new Error("No quotation items found");
+  }
+
+  const client = await Client.findByPk(quotation.client_id, { transaction });
+  const branch = await Branch.findByPk(quotation.branch_id, { transaction });
+
+  if (!client || !branch) {
+    throw new Error("Client or Branch not found");
+  }
+
+  let invoice = await Invoice.findOne({
+    where: { quotation_id: quotation.id },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+
+  if (!invoice) {
+    invoice = await Invoice.create({
+      quotation_id: quotation.id,
+      quotation_no: quotation.quotation_no,
+      client_id: quotation.client_id,
+      branch_id: quotation.branch_id,
+      invoice_no: `INV-${quotation.quotation_no}`,
+      total_amount: quotation.total_amount,
+      gst_amount: quotation.gst_amount,
+      status: "draft"
+    }, { transaction });
+  }
+
+  // Copy quotation items to invoice items only once
+  const existingCount = await InvoiceItem.count({
+    where: { invoice_id: invoice.id },
+    transaction
+  });
+
+  if (existingCount === 0) {
+    for (const item of items) {
+      await InvoiceItem.create({
+        invoice_id: invoice.id,
+        product_name: item.product_name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        unit: item.unit || "",
+        hsn: item.hsn || "",
+        subtotal: item.subtotal || 0,
+        amount: item.amount || 0
+      }, { transaction });
+    }
+  }
+
+  // Stock cut + ledger + client ledger only once
+  if (invoice.status !== "final") {
+    for (const it of items) {
+      const stock = await Stock.findOne({
+        where: {
+          item: it.product_name,
+          branch_id: quotation.branch_id
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+
+      if (!stock) {
+        throw new Error(`Stock not found for item: ${it.product_name}`);
+      }
+
+      if (Number(stock.quantity) < Number(it.quantity)) {
+        throw new Error(`Insufficient stock for item: ${it.product_name}`);
+      }
+
+      stock.quantity = Number(stock.quantity) - Number(it.quantity);
+      await stock.save({ transaction });
+
+      await Ledger.create({
+        branch_id: quotation.branch_id,
+        stock_id: stock.id,
+        type: "SALE",
+        quantity: it.quantity,
+        rate: it.unit_price,
+        total: it.subtotal || it.amount || 0,
+        reference_no: invoice.invoice_no
+      }, { transaction });
+    }
+
+    await ClientLedger.create({
+      client_id: quotation.client_id,
+      branch_id: quotation.branch_id,
+      type: "SALE",
+      amount: quotation.total_amount,
+      invoice_no: invoice.invoice_no,
+      remark: "Invoice"
+    }, { transaction });
+
+    invoice.status = "final";
+    await invoice.save({ transaction });
+
+    quotation.status = "invoiced";
+    await quotation.save({ transaction });
+  }
+
+  return { invoice, quotation, client, branch };
+}
+
+function formatDate(date) {
+  if (!date) return "";
+  const d = new Date(date);
+  return d.toLocaleDateString("en-GB").replace(/\//g, "-");
+}
+
+function money(val) {
+  return Number(val || 0).toFixed(2);
+}
+
+function numberToWords(num) {
+  const a = [
+    "", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+    "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+    "Seventeen", "Eighteen", "Nineteen"
+  ];
+
+  const b = [
+    "", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"
+  ];
+
+  const inWords = (n) => {
+    n = Math.floor(Number(n || 0));
+
+    if (n < 20) return a[n];
+    if (n < 100) return b[Math.floor(n / 10)] + (n % 10 ? " " + a[n % 10] : "");
+    if (n < 1000) return a[Math.floor(n / 100)] + " Hundred" + (n % 100 ? " " + inWords(n % 100) : "");
+    if (n < 100000) return inWords(Math.floor(n / 1000)) + " Thousand" + (n % 1000 ? " " + inWords(n % 1000) : "");
+    if (n < 10000000) return inWords(Math.floor(n / 100000)) + " Lakh" + (n % 100000 ? " " + inWords(n % 100000) : "");
+    return inWords(Math.floor(n / 10000000)) + " Crore" + (n % 10000000 ? " " + inWords(n % 10000000) : "");
+  };
+
+  const integerPart = Math.floor(Number(num || 0));
+  const decimalPart = Math.round((Number(num || 0) - integerPart) * 100);
+
+  let words = inWords(integerPart) + " Rupees";
+  if (decimalPart > 0) {
+    words += " and " + inWords(decimalPart) + " Paisa";
+  }
+
+  return words + " Only";
+}
+
+
+
+
+async function generateGSTInvoicePDF({ branch, invoice, client, items }) {
   return new Promise((resolve, reject) => {
     try {
-      const doc = new PDFDocument({ margin: 40 });
+      const doc = new PDFDocument({
+        size: "A4",
+        margin: 20
+      });
 
-      let buffers = [];
+      const buffers = [];
       doc.on("data", buffers.push.bind(buffers));
       doc.on("end", () => resolve(Buffer.concat(buffers)));
 
-      // ================= HEADER =================
-      doc.fontSize(16).text(branch?.name || "", { align: "center" });
-      doc.fontSize(10).text(branch?.location || "", { align: "center" });
-      doc.text(`GST: ${branch?.gst || ""}`, { align: "center" });
+      const pageWidth = doc.page.width;
+      const startX = 20;
+      const usableWidth = pageWidth - 40;
 
-      doc.moveDown();
-      doc.fontSize(14).text("TAX INVOICE", { align: "center" });
-      doc.moveDown(2);
+      // ========== CALCULATIONS ==========
+      const subtotal = items.reduce((sum, i) => sum + Number(i.subtotal || i.amount || 0), 0);
+      const gstAmount = Number(invoice.gst_amount || 0);
+      const cgst = gstAmount / 2;
+      const sgst = gstAmount / 2;
+      const grandTotal = Number(invoice.total_amount || 0);
 
-      // ================= TOP INFO =================
-      doc.fontSize(10);
+      // ========== HEADER ==========
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(28)
+        .fillColor("#5DADE2")
+        .text(branch.name || branch.branch_name || "Construct Ability", startX, 20, {
+          width: usableWidth,
+          align: "center"
+        });
 
-      doc.text(`Invoice No: ${invoice?.invoice_no}`, { align: "right" });
-      doc.text(`Date: ${new Date().toLocaleDateString()}`, { align: "right" });
+      doc
+        .font("Helvetica")
+        .fontSize(9)
+        .fillColor("black")
+        .text(
+          `Address- ${branch.address || branch.branch_address || ""}, ${branch.city || ""}, ${branch.state || ""} - ${branch.pincode || ""}`,
+          startX,
+          60,
+          { width: usableWidth, align: "center" }
+        );
 
-      doc.moveDown();
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(9)
+        .text(`GST No- ${branch.gst_number || branch.gst || branch.gst_no || ""}`, startX, 74, {
+          width: usableWidth,
+          align: "center"
+        });
 
-      // ================= ADDRESS =================
-      const startY = doc.y;
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(10)
+        .text("TAX-INVOICE", startX, 92, { width: usableWidth, align: "center" });
 
-      doc.text("Billing Address:", 40, startY);
-      doc.text(client?.name || "", 40, startY + 15);
-      doc.text(client?.address || "", 40, startY + 30, { width: 220 });
+      doc
+        .font("Helvetica")
+        .fontSize(8)
+        .text("(Original for buyer)", startX + usableWidth - 110, 92, { width: 100, align: "right" });
 
-      doc.text("Shipping Address:", 320, startY);
-      doc.text(client?.name || "", 320, startY + 15);
-      doc.text(client?.address || "", 320, startY + 30, { width: 220 });
+      // ========== MAIN BOX ==========
+      let y = 110;
+      doc.rect(startX, y, usableWidth, 190).stroke();
 
-      doc.moveDown(4);
+      doc.moveTo(startX + usableWidth / 2, y).lineTo(startX + usableWidth / 2, y + 190).stroke();
 
-      // ================= TABLE =================
-      let y = doc.y + 10;
+      // Left top
+      doc.font("Helvetica-Bold").fontSize(10).text(branch.name || branch.branch_name || "Company", startX + 5, y + 5);
+      doc.font("Helvetica").fontSize(9)
+        .text(`House no- ${branch.address || branch.branch_address || ""}`, startX + 5, y + 22)
+        .text(`${branch.city || ""}, ${branch.state || ""} - ${branch.pincode || ""}`, startX + 5, y + 36)
+        .text(`GSTIN/UIN: ${branch.gst_number || branch.gst || branch.gst_no || ""}`, startX + 5, y + 52)
+        .text(`State Name: ${branch.state || ""}`, startX + 5, y + 66)
+        .text(`E-Mail: ${branch.email || ""}`, startX + 5, y + 80);
 
-      const tableTop = y;
+      // Left bottom buyer
+      doc.moveTo(startX, y + 105).lineTo(startX + usableWidth / 2, y + 105).stroke();
+
+      doc.font("Helvetica-Bold").fontSize(10).text(
+        client.name || client.company_name || client.client_name || "Client",
+        startX + 5,
+        y + 110
+      );
+
+      doc.font("Helvetica").fontSize(9)
+        .text(`${client.address || client.client_address || ""}`, startX + 5, y + 130)
+        .text(`${client.city || ""}, ${client.state || ""}`, startX + 5, y + 145)
+        .text(`GST No: ${client.gst_number || client.gst || client.gst_no || ""}`, startX + 5, y + 170)
+        .text(`State Name: ${client.state || ""}`, startX + 5, y + 185);
+
+      // Right section
+      const rx = startX + usableWidth / 2;
+      const rw = usableWidth / 2;
+      const rowH = 19;
+      const labelW = 115;
+
+      const rightRows = [
+        ["Invoice No.", invoice.invoice_no || ""],
+        ["Dated", formatDate(invoice.createdAt || new Date())],
+        ["Delivery Note", ""],
+        ["Mode/Terms of payment", "RTGS"],
+        ["Supplier's Ref.", ""],
+        ["Other Reference(s)", invoice.quotation_no || ""],
+        ["Despatch Document No.", ""],
+        ["Project Name", client.name || client.company_name || ""],
+        ["", client.address || ""],
+        ["", client.city || ""]
+      ];
+
+      let ry = y;
+      for (let i = 0; i < rightRows.length; i++) {
+        doc.rect(rx, ry, rw, rowH).stroke();
+        doc.moveTo(rx + labelW, ry).lineTo(rx + labelW, ry + rowH).stroke();
+
+        doc.font("Helvetica").fontSize(8)
+          .text(rightRows[i][0], rx + 4, ry + 5, { width: labelW - 8 })
+          .text(rightRows[i][1], rx + labelW + 4, ry + 5, { width: rw - labelW - 8 });
+
+        ry += rowH;
+      }
+
+      // ========== ITEMS TABLE ==========
+      y = 310;
+      const tableX = startX;
+      const tableW = usableWidth;
 
       const col = {
-        no: 40,
-        item: 70,
-        hsn: 230,
-        qty: 280,
-        rate: 320,
-        taxable: 380,
-        cgst: 450,
-        sgst: 500,
-        amount: 550
+        sl: 35,
+        desc: 255,
+        hsn: 70,
+        qty: 60,
+        rate: 70,
+        unit: 60,
+        amount: 90
       };
 
-      // HEADER
-      doc.fontSize(10).text("No", col.no, y);
-      doc.text("Item", col.item, y);
-      doc.text("HSN", col.hsn, y);
-      doc.text("Qty", col.qty, y);
-      doc.text("Rate", col.rate, y);
-      doc.text("Taxable", col.taxable, y);
-      doc.text("CGST", col.cgst, y);
-      doc.text("SGST", col.sgst, y);
-      doc.text("Amount", col.amount, y);
+      const headers = ["SL No.", "Description of Goods", "HSN/SAC", "Quantity", "Rate", "Unit", "Amount"];
 
-      y += 15;
+      const colXs = [
+        tableX,
+        tableX + col.sl,
+        tableX + col.sl + col.desc,
+        tableX + col.sl + col.desc + col.hsn,
+        tableX + col.sl + col.desc + col.hsn + col.qty,
+        tableX + col.sl + col.desc + col.hsn + col.qty + col.rate,
+        tableX + col.sl + col.desc + col.hsn + col.qty + col.rate + col.unit
+      ];
 
-      doc.moveTo(40, y).lineTo(570, y).stroke();
+      const tableEndX = tableX + tableW;
 
-      y += 5;
+      // Header row
+      doc.rect(tableX, y, tableW, 22).stroke();
+      colXs.forEach((x) => doc.moveTo(x, y).lineTo(x, y + 22).stroke());
+      doc.moveTo(tableEndX, y).lineTo(tableEndX, y + 22).stroke();
 
-      let totalTaxable = 0;
-      let total = 0;
+      doc.font("Helvetica-Bold").fontSize(8);
+      doc.text(headers[0], tableX + 5, y + 7, { width: col.sl - 10, align: "center" });
+      doc.text(headers[1], colXs[1] + 5, y + 7, { width: col.desc - 10 });
+      doc.text(headers[2], colXs[2] + 5, y + 7, { width: col.hsn - 10, align: "center" });
+      doc.text(headers[3], colXs[3] + 5, y + 7, { width: col.qty - 10, align: "center" });
+      doc.text(headers[4], colXs[4] + 5, y + 7, { width: col.rate - 10, align: "center" });
+      doc.text(headers[5], colXs[5] + 5, y + 7, { width: col.unit - 10, align: "center" });
+      doc.text(headers[6], colXs[6] + 5, y + 7, { width: col.amount - 10, align: "center" });
 
-      items.forEach((item, i) => {
-        const taxable = Number(item?.subtotal || 0);
-        const cgst = taxable * 0.09;
-        const sgst = taxable * 0.09;
-        const amount = taxable + cgst + sgst;
+      y += 22;
 
-        totalTaxable += taxable;
-        total += amount;
+      doc.font("Helvetica").fontSize(8);
 
-        doc.text(i + 1, col.no, y);
-        doc.text(item?.product_name || "", col.item, y, { width: 150 });
-        doc.text(item?.hsn || "", col.hsn, y);
-        doc.text(item?.quantity || 0, col.qty, y);
-        doc.text(item?.unit_price || 0, col.rate, y);
+      items.forEach((item, index) => {
+        const itemRowH = 20;
 
-        doc.text(taxable.toFixed(2), col.taxable, y);
-        doc.text(cgst.toFixed(2), col.cgst, y);
-        doc.text(sgst.toFixed(2), col.sgst, y);
-        doc.text(amount.toFixed(2), col.amount, y);
+        doc.rect(tableX, y, tableW, itemRowH).stroke();
+        colXs.forEach((x) => doc.moveTo(x, y).lineTo(x, y + itemRowH).stroke());
+        doc.moveTo(tableEndX, y).lineTo(tableEndX, y + itemRowH).stroke();
 
-        y += 20;
+        doc.text(String(index + 1), tableX + 5, y + 6, { width: col.sl - 10, align: "center" });
+        doc.text(item.product_name || "", colXs[1] + 5, y + 6, { width: col.desc - 10 });
+        doc.text(item.hsn || "", colXs[2] + 5, y + 6, { width: col.hsn - 10, align: "center" });
+        doc.text(String(item.quantity || 0), colXs[3] + 5, y + 6, { width: col.qty - 10, align: "center" });
+        doc.text(money(item.unit_price || 0), colXs[4] + 5, y + 6, { width: col.rate - 10, align: "center" });
+        doc.text(item.unit || "", colXs[5] + 5, y + 6, { width: col.unit - 10, align: "center" });
+        doc.text(money(item.subtotal || item.amount || 0), colXs[6] + 5, y + 6, { width: col.amount - 10, align: "right" });
 
-        // PAGE BREAK
-        if (y > 750) {
-          doc.addPage();
-          y = 50;
-        }
+        y += itemRowH;
       });
 
-      doc.moveTo(40, y).lineTo(570, y).stroke();
+      // Blank rows
+      for (let i = items.length; i < 6; i++) {
+        const blankRowH = 20;
+        doc.rect(tableX, y, tableW, blankRowH).stroke();
+        colXs.forEach((x) => doc.moveTo(x, y).lineTo(x, y + blankRowH).stroke());
+        doc.moveTo(tableEndX, y).lineTo(tableEndX, y + blankRowH).stroke();
+        y += blankRowH;
+      }
 
-      y += 15;
+      // Totals
+      const totalRows = [
+        ["Total Amount", money(subtotal)],
+        ["CGST @9%", money(cgst)],
+        ["SGST @9%", money(sgst)],
+        ["Round Off", "0.00"],
+        ["Total", money(grandTotal)]
+      ];
 
-      // ================= TOTAL =================
-      const totalX = 350;
+      totalRows.forEach((r) => {
+        const totalRowH = 18;
 
-      doc.text(`Total Before Tax:`, totalX, y);
-      doc.text(`${totalTaxable.toFixed(2)}`, 500, y);
+        doc.rect(tableX, y, tableW, totalRowH).stroke();
+        colXs.forEach((x) => doc.moveTo(x, y).lineTo(x, y + totalRowH).stroke());
+        doc.moveTo(tableEndX, y).lineTo(tableEndX, y + totalRowH).stroke();
 
-      y += 15;
-      doc.text(`CGST:`, totalX, y);
-      doc.text(`${(totalTaxable * 0.09).toFixed(2)}`, 500, y);
+        doc.font("Helvetica-Bold").fontSize(8)
+          .text(r[0], colXs[1], y + 5, {
+            width: col.desc + col.hsn + col.qty + col.rate + col.unit - 10,
+            align: "right"
+          })
+          .text(r[1], colXs[6] + 5, y + 5, {
+            width: col.amount - 10,
+            align: "right"
+          });
 
-      y += 15;
-      doc.text(`SGST:`, totalX, y);
-      doc.text(`${(totalTaxable * 0.09).toFixed(2)}`, 500, y);
+        y += totalRowH;
+      });
 
-      y += 15;
-      doc.fontSize(12).text(`Grand Total:`, totalX, y);
-      doc.text(`${total.toFixed(2)}`, 500, y);
+      // Amount in words
+      doc.rect(tableX, y, tableW, 28).stroke();
+      doc.font("Helvetica").fontSize(8)
+        .text(`Amount Chargeable (in words): ${numberToWords(grandTotal)}`, tableX + 5, y + 8, {
+          width: tableW - 10
+        });
 
-      y += 40;
+      y += 28;
 
-      // ================= BANK =================
-      doc.fontSize(10);
-      doc.text("Bank Details:", 40, y);
-      doc.text(`Bank: ${branch?.bank_name || ""}`, 40, y + 15);
-      doc.text(`Account: ${branch?.account_no || ""}`, 40, y + 30);
-      doc.text(`IFSC: ${branch?.ifsc || ""}`, 40, y + 45);
+      // Tax summary
+      doc.rect(tableX, y, tableW, 70).stroke();
+      doc.moveTo(tableX + 180, y).lineTo(tableX + 180, y + 70).stroke();
+      doc.moveTo(tableX + 360, y).lineTo(tableX + 360, y + 70).stroke();
+      doc.moveTo(tableX + 470, y).lineTo(tableX + 470, y + 70).stroke();
 
-      // ================= SIGN =================
-      doc.text("Authorised Signatory", 400, y + 60);
+      doc.font("Helvetica-Bold").fontSize(8)
+        .text("HSN/SAC", tableX + 60, y + 8)
+        .text("Integrated Tax", tableX + 230, y + 8)
+        .text("Total Tax Amount", tableX + 490, y + 8);
+
+      doc.font("Helvetica").fontSize(8)
+        .text("CGST @9%", tableX + 220, y + 28)
+        .text(money(cgst), tableX + 310, y + 28)
+        .text(money(cgst + sgst), tableX + 500, y + 28)
+        .text("SGST @9%", tableX + 220, y + 45)
+        .text(money(sgst), tableX + 310, y + 45);
+
+      y += 70;
+
+      // Bank Details
+      doc.rect(tableX, y, tableW, 100).stroke();
+      doc.moveTo(tableX + tableW / 2, y).lineTo(tableX + tableW / 2, y + 100).stroke();
+
+      doc.font("Helvetica").fontSize(8)
+        .text(`Total Amount (in words): ${numberToWords(gstAmount)}`, tableX + 5, y + 10, {
+          width: tableW / 2 - 10
+        });
+
+      doc.font("Helvetica-Bold").fontSize(9)
+        .text("Company Bank's Details:", tableX + tableW / 2 + 5, y + 10);
+
+      doc.font("Helvetica").fontSize(8)
+        .text(`Bank Name: ${branch.bank_name || "HDFC"}`, tableX + tableW / 2 + 5, y + 30)
+        .text(`A/c No.: ${branch.bank_account || branch.account_no || ""}`, tableX + tableW / 2 + 5, y + 45)
+        .text(`Branch & IFSC Code: ${branch.ifsc || ""}`, tableX + tableW / 2 + 5, y + 60);
+
+      y += 100;
+
+      // Declaration
+      doc.rect(tableX, y, tableW, 70).stroke();
+      doc.moveTo(tableX + tableW / 2, y).lineTo(tableX + tableW / 2, y + 70).stroke();
+
+      doc.font("Helvetica-Bold").fontSize(8)
+        .text("Declaration :", tableX + 5, y + 8);
+
+      doc.font("Helvetica").fontSize(8)
+        .text(
+          "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.",
+          tableX + 5,
+          y + 20,
+          { width: tableW / 2 - 10 }
+        );
+
+      doc.font("Helvetica-Bold").fontSize(9)
+        .text(`FOR ${String(branch.name || branch.branch_name || "COMPANY").toUpperCase()}`, tableX + tableW / 2 + 40, y + 10);
+
+      doc.font("Helvetica").fontSize(8)
+        .text("Authorised Signatory", tableX + tableW / 2 + 60, y + 50);
+
+      y += 70;
+
+      // Footer
+      doc.font("Helvetica").fontSize(8)
+        .text("SUBJECT TO JURISDICTION", tableX, y + 5, {
+          width: tableW / 2,
+          align: "center"
+        })
+        .text("(This is Computer Generated Invoice)", tableX + tableW / 2, y + 5, {
+          width: tableW / 2,
+          align: "center"
+        });
 
       doc.end();
-
     } catch (err) {
       reject(err);
     }
   });
-};
+}
+
+
 
 
 exports.convertQuotationToInvoice = async (req, res) => {
@@ -563,6 +1018,7 @@ exports.convertQuotationToInvoice = async (req, res) => {
 
     t = await sequelize.transaction();
 
+    // ===== 1. FIND QUOTATION =====
     const quotation = await Quotation.findByPk(id, {
       transaction: t,
       lock: t.LOCK.UPDATE
@@ -570,14 +1026,21 @@ exports.convertQuotationToInvoice = async (req, res) => {
 
     if (!quotation) {
       await t.rollback();
-      return res.status(404).json({ success: false, error: "Quotation not found" });
+      return res.status(404).json({
+        success: false,
+        error: "Quotation not found"
+      });
     }
 
     if (quotation.status !== "approved" && quotation.status !== "invoiced") {
       await t.rollback();
-      return res.status(400).json({ success: false, error: "Quotation not approved" });
+      return res.status(400).json({
+        success: false,
+        error: "Quotation not approved"
+      });
     }
 
+    // ===== 2. GET QUOTATION ITEMS =====
     const items = await QuotationItem.findAll({
       where: { quotation_id: id },
       transaction: t
@@ -585,17 +1048,25 @@ exports.convertQuotationToInvoice = async (req, res) => {
 
     if (!items.length) {
       await t.rollback();
-      return res.status(400).json({ success: false, error: "No quotation items found" });
+      return res.status(400).json({
+        success: false,
+        error: "No quotation items found"
+      });
     }
 
+    // ===== 3. GET CLIENT + BRANCH =====
     const client = await Client.findByPk(quotation.client_id, { transaction: t });
     const branch = await Branch.findByPk(quotation.branch_id, { transaction: t });
 
     if (!client || !branch) {
       await t.rollback();
-      return res.status(404).json({ success: false, error: "Client or Branch not found" });
+      return res.status(404).json({
+        success: false,
+        error: "Client or Branch not found"
+      });
     }
 
+    // ===== 4. FIND OR CREATE INVOICE =====
     let invoice = await Invoice.findOne({
       where: { quotation_id: quotation.id },
       transaction: t,
@@ -615,6 +1086,7 @@ exports.convertQuotationToInvoice = async (req, res) => {
       }, { transaction: t });
     }
 
+    // ===== 5. COPY QUOTATION ITEMS TO INVOICE ITEMS ONLY ONCE =====
     const existingCount = await InvoiceItem.count({
       where: { invoice_id: invoice.id },
       transaction: t
@@ -635,7 +1107,7 @@ exports.convertQuotationToInvoice = async (req, res) => {
       }
     }
 
-    // ===== STOCK + LEDGER =====
+    // ===== 6. STOCK CUT + LEDGER + CLIENT LEDGER ONLY ONCE =====
     if (invoice.status !== "final") {
       for (const it of items) {
         const stock = await Stock.findOne({
@@ -647,15 +1119,23 @@ exports.convertQuotationToInvoice = async (req, res) => {
           lock: t.LOCK.UPDATE
         });
 
-        if (!stock || stock.quantity < it.quantity) {
+        if (!stock) {
           await t.rollback();
           return res.status(400).json({
             success: false,
-            error: `Stock issue: ${it.product_name}`
+            error: `Stock not found for item: ${it.product_name}`
           });
         }
 
-        stock.quantity -= it.quantity;
+        if (Number(stock.quantity) < Number(it.quantity)) {
+          await t.rollback();
+          return res.status(400).json({
+            success: false,
+            error: `Insufficient stock for item: ${it.product_name}`
+          });
+        }
+
+        stock.quantity = Number(stock.quantity) - Number(it.quantity);
         await stock.save({ transaction: t });
 
         await Ledger.create({
@@ -664,7 +1144,7 @@ exports.convertQuotationToInvoice = async (req, res) => {
           type: "SALE",
           quantity: it.quantity,
           rate: it.unit_price,
-          total: it.subtotal,
+          total: it.subtotal || it.amount || 0,
           reference_no: invoice.invoice_no
         }, { transaction: t });
       }
@@ -687,13 +1167,18 @@ exports.convertQuotationToInvoice = async (req, res) => {
 
     await t.commit();
 
-    // ===== PDF GENERATE =====
+    // ===== 7. RELOAD FINAL INVOICE ITEMS FOR PDF =====
+    const invoiceItems = await InvoiceItem.findAll({
+      where: { invoice_id: invoice.id }
+    });
+
+    // ===== 8. GENERATE PDF =====
     try {
       const pdf = await generateGSTInvoicePDF({
         branch,
         invoice,
         client,
-        items
+        items: invoiceItems
       });
 
       res.set({
@@ -708,13 +1193,17 @@ exports.convertQuotationToInvoice = async (req, res) => {
 
       return res.status(200).json({
         success: true,
-        message: "Invoice created but PDF failed",
+        message: "Invoice created successfully but PDF generation failed",
         invoice
       });
     }
 
   } catch (err) {
-    if (t && !t.finished) await t.rollback();
+    if (t && !t.finished) {
+      await t.rollback();
+    }
+
+    console.error("convertQuotationToInvoice error:", err);
 
     return res.status(500).json({
       success: false,
@@ -723,6 +1212,8 @@ exports.convertQuotationToInvoice = async (req, res) => {
   }
 };
 exports.approveQuotation = async (req, res) => {
+  let t;
+
   try {
     const { id } = req.params;
 
@@ -733,17 +1224,23 @@ exports.approveQuotation = async (req, res) => {
       ? [Number(req.user.branch_id)].filter((b) => !isNaN(b))
       : [];
 
-    // 1. fetch quotation with branch
-    const quotation = await Quotation.findByPk(id);
+    t = await sequelize.transaction();
+
+    // ===== 1. FETCH QUOTATION =====
+    const quotation = await Quotation.findByPk(id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
 
     if (!quotation) {
+      await t.rollback();
       return res.status(404).json({
         success: false,
         error: "Quotation not found"
       });
     }
 
-    // 2. allowed roles
+    // ===== 2. ROLE CHECK =====
     const allowedRoles = [
       "super_admin",
       "super_sales_manager",
@@ -752,15 +1249,17 @@ exports.approveQuotation = async (req, res) => {
     ];
 
     if (!allowedRoles.includes(role)) {
+      await t.rollback();
       return res.status(403).json({
         success: false,
         message: "Access denied: Insufficient role"
       });
     }
 
-    // 3. sales_manager can approve only own branch quotation
+    // ===== 3. BRANCH CHECK =====
     if (role === "sales_manager") {
       if (!userBranches.length) {
+        await t.rollback();
         return res.status(403).json({
           success: false,
           message: "No branch access"
@@ -768,6 +1267,7 @@ exports.approveQuotation = async (req, res) => {
       }
 
       if (!userBranches.includes(Number(quotation.branch_id))) {
+        await t.rollback();
         return res.status(403).json({
           success: false,
           message: "Access denied: You can approve only your branch quotations"
@@ -775,32 +1275,211 @@ exports.approveQuotation = async (req, res) => {
       }
     }
 
-    // 4. already approved
-    if (quotation.status === "approved") {
-      return res.status(400).json({
-        success: false,
-        message: "Quotation is already approved"
-      });
-    }
-
-    // optional: prevent rejected/invoiced approval
+    // ===== 4. IF ALREADY INVOICED, JUST RETURN PDF =====
     if (quotation.status === "invoiced") {
+      await t.commit();
+
+      const invoice = await Invoice.findOne({
+        where: { quotation_id: quotation.id }
+      });
+
+      if (!invoice) {
+        return res.status(404).json({
+          success: false,
+          error: "Invoice not found for this quotation"
+        });
+      }
+
+      const client = await Client.findByPk(quotation.client_id);
+      const branch = await Branch.findByPk(quotation.branch_id);
+      const invoiceItems = await InvoiceItem.findAll({
+        where: { invoice_id: invoice.id }
+      });
+
+      const pdf = await generateGSTInvoicePDF({
+        branch,
+        invoice,
+        client,
+        items: invoiceItems
+      });
+
+      res.set({
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename=${invoice.invoice_no}.pdf`
+      });
+
+      return res.send(pdf);
+    }
+
+    // ===== 5. APPROVE QUOTATION =====
+    quotation.status = "approved";
+    await quotation.save({ transaction: t });
+
+    // ===== 6. GET QUOTATION ITEMS =====
+    const items = await QuotationItem.findAll({
+      where: { quotation_id: id },
+      transaction: t
+    });
+
+    if (!items.length) {
+      await t.rollback();
       return res.status(400).json({
         success: false,
-        message: "Invoiced quotation cannot be approved again"
+        error: "No quotation items found"
       });
     }
 
-    quotation.status = "approved";
-    await quotation.save();
+    // ===== 7. GET CLIENT + BRANCH =====
+    const client = await Client.findByPk(quotation.client_id, { transaction: t });
+    const branch = await Branch.findByPk(quotation.branch_id, { transaction: t });
 
-    return res.status(200).json({
-      success: true,
-      message: "Quotation approved successfully",
-      quotation
+    if (!client || !branch) {
+      await t.rollback();
+      return res.status(404).json({
+        success: false,
+        error: "Client or Branch not found"
+      });
+    }
+
+    // ===== 8. FIND OR CREATE INVOICE =====
+    let invoice = await Invoice.findOne({
+      where: { quotation_id: quotation.id },
+      transaction: t,
+      lock: t.LOCK.UPDATE
     });
+
+    if (!invoice) {
+      invoice = await Invoice.create({
+        quotation_id: quotation.id,
+        quotation_no: quotation.quotation_no,
+        client_id: quotation.client_id,
+        branch_id: quotation.branch_id,
+        invoice_no: `INV-${quotation.quotation_no}`,
+        total_amount: quotation.total_amount,
+        gst_amount: quotation.gst_amount,
+        status: "draft"
+      }, { transaction: t });
+    }
+
+    // ===== 9. COPY ITEMS ONLY ONCE =====
+    const existingCount = await InvoiceItem.count({
+      where: { invoice_id: invoice.id },
+      transaction: t
+    });
+
+    if (existingCount === 0) {
+      for (const item of items) {
+        await InvoiceItem.create({
+          invoice_id: invoice.id,
+          product_name: item.product_name,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          unit: item.unit || "",
+          hsn: item.hsn || "",
+          subtotal: item.subtotal || 0,
+          amount: item.amount || 0
+        }, { transaction: t });
+      }
+    }
+
+    // ===== 10. STOCK CUT + LEDGER ONLY ONCE =====
+    if (invoice.status !== "final") {
+      for (const it of items) {
+        const stock = await Stock.findOne({
+          where: {
+            item: it.product_name,
+            branch_id: quotation.branch_id
+          },
+          transaction: t,
+          lock: t.LOCK.UPDATE
+        });
+
+        if (!stock) {
+          await t.rollback();
+          return res.status(400).json({
+            success: false,
+            error: `Stock not found for item: ${it.product_name}`
+          });
+        }
+
+        if (Number(stock.quantity) < Number(it.quantity)) {
+          await t.rollback();
+          return res.status(400).json({
+            success: false,
+            error: `Insufficient stock for item: ${it.product_name}`
+          });
+        }
+
+        stock.quantity = Number(stock.quantity) - Number(it.quantity);
+        await stock.save({ transaction: t });
+
+        await Ledger.create({
+          branch_id: quotation.branch_id,
+          stock_id: stock.id,
+          type: "SALE",
+          quantity: it.quantity,
+          rate: it.unit_price,
+          total: it.subtotal || it.amount || 0,
+          reference_no: invoice.invoice_no
+        }, { transaction: t });
+      }
+
+      await ClientLedger.create({
+        client_id: quotation.client_id,
+        branch_id: quotation.branch_id,
+        type: "SALE",
+        amount: quotation.total_amount,
+        invoice_no: invoice.invoice_no,
+        remark: "Invoice"
+      }, { transaction: t });
+
+      invoice.status = "final";
+      await invoice.save({ transaction: t });
+
+      quotation.status = "invoiced";
+      await quotation.save({ transaction: t });
+    }
+
+    await t.commit();
+
+    // ===== 11. RELOAD INVOICE ITEMS =====
+    const invoiceItems = await InvoiceItem.findAll({
+      where: { invoice_id: invoice.id }
+    });
+
+    // ===== 12. GENERATE PDF =====
+    try {
+      const pdf = await generateGSTInvoicePDF({
+        branch,
+        invoice,
+        client,
+        items: invoiceItems
+      });
+
+      res.set({
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename=${invoice.invoice_no}.pdf`
+      });
+
+      return res.send(pdf);
+
+    } catch (pdfErr) {
+      console.error("PDF error:", pdfErr);
+
+      return res.status(200).json({
+        success: true,
+        message: "Quotation approved and invoice created successfully but PDF generation failed",
+        invoice
+      });
+    }
+
   } catch (err) {
+    if (t && !t.finished) {
+      await t.rollback();
+    }
+
     console.error("APPROVE QUOTATION ERROR:", err);
+
     return res.status(500).json({
       success: false,
       error: err.message || "Server error"
