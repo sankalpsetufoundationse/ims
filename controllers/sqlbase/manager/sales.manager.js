@@ -1956,49 +1956,47 @@ exports.getInvoiceDashboard = async (req, res) => {
       : "";
 
     // ===============================
-    // 1. TOP CARDS (UNCHANGED LOGIC)
+    // 1. TOP CARDS (ONLY DATA FIXED)
     // ===============================
     const stats = await sequelize.query(`
       SELECT 
-        COUNT(*) FILTER (WHERE status='invoiced') AS "totalInvoice",
+        COUNT(*) AS "totalInvoice",
 
         COUNT(*) FILTER (
-          WHERE status='pending'
-          AND "createdAt" >= NOW() - INTERVAL '7 days'
+          WHERE status='draft'
+          AND created_at >= NOW() - INTERVAL '7 days'
         ) AS "pendingInvoice",
 
         COUNT(*) FILTER (
-          WHERE status='invoiced'
-          AND DATE("createdAt") = CURRENT_DATE
+          WHERE DATE(created_at) = CURRENT_DATE
         ) AS "todayInvoice",
 
-        COUNT(*) FILTER (WHERE status='rejected') AS "rejectedInvoice"
+        COUNT(*) FILTER (WHERE status='paid') AS "rejectedInvoice"
 
-      FROM quotations
+      FROM invoices
       ${whereClause}
     `);
 
     // ===============================
-    // 2. INVOICE LIST
+    // 2. INVOICE LIST (ONLY DATA FIXED)
     // ===============================
     const invoicesData = await sequelize.query(`
       SELECT 
-        q.id,
-        q.branch_id AS "branchId",
-        q.quotation_no AS "invoiceNo",
+        i.id,
+        i.branch_id AS "branchId",
+        i.invoice_no AS "invoiceNo",
         c.name AS client,
-        q.total_amount AS amount,
-        q.status,
+        i.total_amount AS amount,
+        i.status,
+        TO_CHAR(i.created_at, 'DD/MM/YYYY, HH24:MI') AS date,
+        i.quotation_no AS "quotationRef"
 
-        TO_CHAR(q."createdAt", 'DD/MM/YYYY, HH24:MI') AS date,
-        q.reference_no AS "quotationRef"
+      FROM invoices i
+      LEFT JOIN clients c ON c.id = i.client_id
 
-      FROM quotations q
-      LEFT JOIN clients c ON c.id = q.client_id
+      ${isSuperSales ? "" : branchId ? `WHERE i.branch_id = ${branchId}` : ""}
 
-      ${isSuperSales ? "" : branchId ? `WHERE q.branch_id = ${branchId}` : ""}
-
-      ORDER BY q.branch_id, q."createdAt" DESC
+      ORDER BY i.branch_id, i.created_at DESC
       LIMIT 50
     `);
 
@@ -2027,13 +2025,12 @@ exports.getInvoiceDashboard = async (req, res) => {
 
         grouped[branch].invoices.push(inv);
 
-        // totals
         grouped[branch].totalInvoices += 1;
         grouped[branch].totalAmount += Number(inv.amount);
 
-        if (inv.status === "pending") grouped[branch].pending++;
-        if (inv.status === "invoiced") grouped[branch].invoiced++;
-        if (inv.status === "rejected") grouped[branch].rejected++;
+        if (inv.status === "draft") grouped[branch].pending++;
+        if (inv.status === "final") grouped[branch].invoiced++;
+        if (inv.status === "paid") grouped[branch].rejected++;
       });
 
       invoices = Object.values(grouped);
@@ -2045,7 +2042,7 @@ exports.getInvoiceDashboard = async (req, res) => {
     res.json({
       success: true,
       stats: stats[0][0],
-      invoices // 👈 same key, bas super me grouped
+      invoices
     });
 
   } catch (err) {
