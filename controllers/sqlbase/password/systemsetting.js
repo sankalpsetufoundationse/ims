@@ -281,9 +281,10 @@ exports.deleteSystemSettings = async (req, res) => {
 exports.getSecurityOverview = async (req, res) => {
   try {
     const userId = req.user?.id;
+    const currentToken = req.headers.authorization?.split(" ")[1] || null;
 
     const user = await User.findByPk(userId, {
-      attributes: ["id", "email"]
+      attributes: ["id", "email", "last_login"]
     });
 
     if (!user) {
@@ -293,49 +294,78 @@ exports.getSecurityOverview = async (req, res) => {
       });
     }
 
-    const latestRecovery = await SecurityActivity.findOne({
+    const activeDevicesRows = await SecurityActivity.findAll({
       where: {
         user_id: userId,
-        activity_type: "recovery_update"
+        activity_type: "login",
+        is_active: true
       },
-      order: [["created_at", "DESC"]]
-    });
-
-    const lastPasswordChange = await SecurityActivity.findOne({
-      where: {
-        user_id: userId,
-        activity_type: "password_change"
-      },
-      order: [["password_changed_at", "DESC"]]
-    });
-
-    const lastLogin = await SecurityActivity.findOne({
-      where: {
-        user_id: userId,
-        activity_type: "login"
-      },
+      attributes: [
+        "id",
+        "device_name",
+        "ip_address",
+        "location",
+        "logged_in_at",
+        "logout_at",
+        "session_token",
+        "is_active",
+        "created_at",
+        "updated_at"
+      ],
       order: [["logged_in_at", "DESC"]]
     });
 
-    const activities = await SecurityActivity.findAll({
+    const recentActivitiesRows = await SecurityActivity.findAll({
       where: {
         user_id: userId,
         activity_type: "login"
       },
+      attributes: [
+        "id",
+        "device_name",
+        "ip_address",
+        "location",
+        "logged_in_at",
+        "logout_at",
+        "is_active",
+        "created_at",
+        "updated_at"
+      ],
       order: [["logged_in_at", "DESC"]],
-      limit: 5
+      limit: 10
     });
+
+    const activeDevices = activeDevicesRows.map((item) => ({
+      id: item.id,
+      device_name: item.device_name || "Unknown Device",
+      ip_address: item.ip_address || null,
+      location: item.location || null,
+      logged_in_at: item.logged_in_at || null,
+      is_active: item.is_active,
+      current_device: currentToken
+        ? item.session_token === currentToken
+        : false
+    }));
+
+    const recentActivities = recentActivitiesRows.map((item) => ({
+      id: item.id,
+      device_name: item.device_name || "Unknown Device",
+      ip_address: item.ip_address || null,
+      location: item.location || null,
+      logged_in_at: item.logged_in_at || null,
+      logout_at: item.logout_at || null,
+      is_active: item.is_active
+    }));
 
     return res.status(200).json({
       success: true,
       message: "Security details fetched successfully",
       data: {
         email: user.email,
-        recovery_phone: latestRecovery?.recovery_phone || null,
-        recovery_email: latestRecovery?.recovery_email || null,
-        last_login: lastLogin?.logged_in_at || null,
-        last_password_change: lastPasswordChange?.password_changed_at || null,
-        recent_activities: activities
+        last_login: user.last_login || null,
+        active_device_count: activeDevices.length,
+        active_devices: activeDevices,
+        recent_login_history: recentActivities
       }
     });
   } catch (error) {
