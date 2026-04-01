@@ -18,11 +18,11 @@ router.post("/reset-password", authController.resetPasswordWithOTP);
 router.get("/notifications", auth,checkRole(["super_admin","admin"]), authController.getMyNotifications);
 router.patch(
   "/notifications/:id/read",
- auth,checkRole(["super_admin"]),
+ auth,checkRole(["super_admin","admin"]),
   authController.markNotificationRead
 );
 
 
-router.get("/recent-activities",auth,checkRole(["super_admin"]), authController.getRecentActivities);
+router.get("/recent-activities",auth,checkRole(["super_admin","admin"]), authController.getRecentActivities);
 
 module.exports = router;
