@@ -21,8 +21,8 @@ const InvoiceItem = require("./InvoiceItem");
 const Notification = require("./notification");
 const PasswordReset = require("./passwordreset");
 const RecentActivity = require("./recentactivity");
-const SystemSetting = require("./systemSetting"); // ✅ add this
-
+const SystemSetting = require("./systemSetting");
+const SecurityActivity = require("./securityactivity");
 // ================= USER =================
 
 User.belongsTo(Role, { foreignKey: "role_id", as: "role" });
@@ -128,6 +128,8 @@ User.hasMany(SystemSetting, { foreignKey: "updated_by", as: "updatedSettings" })
 SystemSetting.belongsTo(User, { foreignKey: "created_by", as: "creator" });
 SystemSetting.belongsTo(User, { foreignKey: "updated_by", as: "updater" });
 
+User.hasMany(SecurityActivity, { foreignKey: "user_id", as: "security_activities" });
+SecurityActivity.belongsTo(User, { foreignKey: "user_id", as: "user" });
 // ================= INIT DB =================
 
 const initDB = async () => {
@@ -189,5 +191,6 @@ module.exports = {
   Notification,
   PasswordReset,
   RecentActivity,
-  SystemSetting // ✅ fix export
+  SystemSetting,
+  SecurityActivity
 };

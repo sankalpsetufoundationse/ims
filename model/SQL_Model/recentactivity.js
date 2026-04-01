@@ -1,39 +1,63 @@
 const { DataTypes } = require("sequelize");
 const sequelize = require("../../config/sqlcon");
 
-const RecentActivity = sequelize.define(
-  "RecentActivity",
+const SystemSetting = sequelize.define(
+  "SystemSetting",
   {
-    user_id: {
+    id: {
       type: DataTypes.INTEGER,
-      allowNull: true
+      autoIncrement: true,
+      primaryKey: true
     },
 
-    action: {
+    branch_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      unique: true,
+      references: {
+        model: "branches",
+        key: "id"
+      }
+    },
+
+    company_name: {
       type: DataTypes.STRING,
       allowNull: false
     },
 
-    details: {
-      type: DataTypes.TEXT,
-      allowNull: false
+    time_zone: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: "Asia/Kolkata"
     },
 
-    ref_id: {
+    date_format: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: "DD/MM/YYYY"
+    },
+
+    currency: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: "INR"
+    },
+
+    created_by: {
       type: DataTypes.INTEGER,
       allowNull: true
     },
 
-    ref_type: {
-      type: DataTypes.STRING,
+    updated_by: {
+      type: DataTypes.INTEGER,
       allowNull: true
     }
   },
   {
-    tableName: "recent_activities",
+    tableName: "system_settings",
     underscored: true,
     timestamps: true
   }
 );
 
-module.exports = RecentActivity;
+module.exports = SystemSetting;
