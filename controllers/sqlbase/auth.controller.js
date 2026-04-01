@@ -2,13 +2,35 @@
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const { Op, fn, col, where } = require("sequelize");
-
+const sgMail = require("@sendgrid/mail");
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 const { User, Role, Branch,Notification,
   PasswordReset,
-  RecentActivity } = require("../../model/SQL_Model");
+   SecurityActivity } = require("../../model/SQL_Model");
+  const RecentActivity = require("../../model/SQL_Model/recentactivity");
 
+const axios = require("axios");
 
+async function getLocationFromIP(ip) {
+  try {
+    if (!ip || ip === "::1" || ip === "127.0.0.1" || ip === "::ffff:127.0.0.1") {
+      return "Localhost";
+    }
 
+    const cleanIp = ip.startsWith("::ffff:") ? ip.replace("::ffff:", "") : ip;
+
+    const { data } = await axios.get(`http://ip-api.com/json/${cleanIp}`);
+
+    if (data && data.status === "success") {
+      return `${data.city || ""}${data.regionName ? ", " + data.regionName : ""}${data.country ? ", " + data.country : ""}`.trim();
+    }
+
+    return "Unknown Location";
+  } catch (error) {
+    console.error("IP location fetch error:", error.message);
+    return "Unknown Location";
+  }
+}
 
 exports.register = async (req, res) => {
   try {
@@ -76,13 +98,11 @@ exports.login = async (req, res) => {
       return res.status(401).json({ error: "User not found" });
     }
 
-    // ❌ inactive user block
     if (!user.is_active) {
       return res.status(403).json({ error: "Account not active" });
     }
 
-    // 🔐 PASSWORD CHECK (ENABLE IN PROD)
-    // const match = await bcrypt.compare(password, user.password);
+    // const match = await user.validatePassword(password);
     // if (!match) {
     //   return res.status(401).json({ error: "Invalid password" });
     // }
@@ -98,7 +118,6 @@ exports.login = async (req, res) => {
 
     let branchIds = [];
 
-    // ✅ SUPER ROLE → ALL ACCESS
     if (superRoles.includes(roleName)) {
       branchIds = ["ALL"];
     } else {
@@ -109,7 +128,6 @@ exports.login = async (req, res) => {
         });
 
         branchIds = userBranches.map((b) => b.branch_id);
-
       } catch (err) {
         if (user.branch_id) {
           branchIds = [user.branch_id];
@@ -123,12 +141,21 @@ exports.login = async (req, res) => {
       }
     }
 
-    // ✅ UPDATE LAST LOGIN
+    const loginTime = new Date();
+
+    const deviceName = req.headers["user-agent"] || "Unknown Device";
+    const ipAddress =
+      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+      req.socket?.remoteAddress ||
+      req.ip ||
+      null;
+
+    const location = await getLocationFromIP(ipAddress);
+
     await user.update({
-      last_login: new Date()
+      last_login: loginTime
     });
 
-    // ✅ TOKEN
     const token = jwt.sign(
       {
         id: user.id,
@@ -139,6 +166,34 @@ exports.login = async (req, res) => {
       { expiresIn: "7d" }
     );
 
+    await SecurityActivity.update(
+      {
+        is_active: false,
+        logout_at: loginTime
+      },
+      {
+        where: {
+          user_id: user.id,
+          activity_type: "login",
+          is_active: true,
+          device_name: deviceName,
+          ip_address: ipAddress
+        }
+      }
+    );
+
+    await SecurityActivity.create({
+      user_id: user.id,
+      activity_type: "login",
+      device_name: deviceName,
+      ip_address: ipAddress,
+      location,
+      logged_in_at: loginTime,
+      session_token: token,
+      is_active: true,
+      logout_at: null
+    });
+
     res.json({
       token,
       user: {
@@ -147,7 +202,7 @@ exports.login = async (req, res) => {
         email: user.email,
         role: roleName,
         branches: branchIds,
-        lastLogin: user.last_login,   // 👈 optional return
+        lastLogin: loginTime,
       },
     });
 
@@ -157,6 +212,14 @@ exports.login = async (req, res) => {
   }
 };
 
+
+function generateOTP(length = 6) {
+  let otp = "";
+  for (let i = 0; i < length; i++) {
+    otp += Math.floor(Math.random() * 10);
+  }
+  return otp;
+}
 
 function generateOTP(length = 6) {
   let otp = "";
@@ -255,14 +318,12 @@ exports.requestPasswordReset = async (req, res) => {
         {
           model: Role,
           as: "role",
-          attributes: ["id", "name"],
-          required: false
+          attributes: ["id", "name"]
         },
         {
           model: Branch,
           as: "branch",
-          attributes: ["id", "name"],
-          required: false
+          attributes: ["id", "name"]
         }
       ]
     });
@@ -281,46 +342,50 @@ exports.requestPasswordReset = async (req, res) => {
       });
     }
 
-    if (user.role?.name === "super_admin") {
-      return res.status(400).json({
-        success: false,
-        message: "Super admin cannot use this reset flow"
-      });
-    }
-
-    await PasswordReset.update(
-      { status: "expired" },
-      {
-        where: {
-          user_id: user.id,
-          status: "pending",
-          expires_at: {
-            [Op.lt]: new Date()
-          }
-        }
-      }
-    );
-
-    const existingPending = await PasswordReset.findOne({
-      where: {
-        user_id: user.id,
-        status: "pending",
-        expires_at: {
-          [Op.gt]: new Date()
-        }
-      },
-      order: [["createdAt", "DESC"]]
-    });
-
-    if (existingPending) {
-      return res.status(400).json({
-        success: false,
-        message: "OTP already generated. Please contact approver."
-      });
-    }
-
     const otp = generateOTP(6);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    // =========================
+    // 🔥 SUPER ADMIN FLOW
+    // =========================
+    if (user.role?.name === "super_admin") {
+
+      await PasswordReset.update(
+        { status: "used" },
+        {
+          where: {
+            user_id: user.id,
+            status: "pending"
+          }
+        }
+      );
+
+      await PasswordReset.create({
+        user_id: user.id,
+        branch_id: null,
+        otp,
+        status: "pending",
+        expires_at: expiresAt
+      });
+
+      // EMAIL SEND
+      await sgMail.send({
+        to: user.email,
+        from: process.env.SENDGRID_FROM_EMAIL,
+        subject: "Super Admin Password Reset OTP",
+        html: `<h2>Your OTP: ${otp}</h2><p>Valid for 10 minutes</p>`
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "OTP sent to your email (Super Admin)"
+      });
+    }
+
+    // =========================
+    // 🔥 NORMAL USER FLOW (SAME AS BEFORE)
+    // =========================
+
     const roleName = user.role?.name || "";
     const approverType = getApproverType(roleName);
 
@@ -338,10 +403,7 @@ exports.requestPasswordReset = async (req, res) => {
     if (!approvers.length) {
       return res.status(404).json({
         success: false,
-        message:
-          approverType === "super_admin"
-            ? "No active super admin found"
-            : "No active branch admin found for this branch"
+        message: "No approver found"
       });
     }
 
@@ -353,45 +415,17 @@ exports.requestPasswordReset = async (req, res) => {
       status: "pending"
     });
 
-    // OTP goes to actual approver
     await createNotificationsForUsers(approvers, () => ({
       title: "Password Reset OTP Request",
-      message: `${user.name} (${user.email}) | Role: ${
-        user.role?.name || "N/A"
-      } | Branch: ${user.branch?.name || "N/A"} | OTP: ${otp}`,
+      message: `${user.name} (${user.email}) | OTP: ${otp}`,
       type: "password_reset_request"
     }));
 
-    // Super admin visibility always
-    const visibilityUsers = uniqueUsersById(superAdmins).filter(
-      (sa) => !approvers.some((ap) => ap.id === sa.id)
-    );
-
-    await createNotificationsForUsers(visibilityUsers, () => ({
-      title: "Password Reset Requested",
-      message: `${user.name} (${user.email}) | Role: ${
-        user.role?.name || "N/A"
-      } | Branch: ${user.branch?.name || "N/A"} requested password reset.`,
-      type: "password_reset_request_visibility"
-    }));
-
-    await RecentActivity.create({
-      user_id: user.id,
-      action: "PASSWORD_RESET_REQUESTED",
-      details: `${user.name} (${user.email}) requested password reset. OTP sent to ${
-        approverType === "super_admin" ? "super admin" : "branch admin"
-      }.`,
-      ref_id: resetRequest.id,
-      ref_type: "password_reset"
-    });
-
     return res.status(200).json({
       success: true,
-      message:
-        approverType === "super_admin"
-          ? "OTP sent to super admin. Please contact super admin for OTP."
-          : "OTP sent to your branch admin. Please contact branch admin for OTP."
+      message: "OTP sent to admin. Contact admin for OTP."
     });
+
   } catch (error) {
     console.error("requestPasswordReset error:", error);
     return res.status(500).json({
@@ -401,7 +435,6 @@ exports.requestPasswordReset = async (req, res) => {
     });
   }
 };
-
 // =========================
 // VERIFY OTP
 // =========================
