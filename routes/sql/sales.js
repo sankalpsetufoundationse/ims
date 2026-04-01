@@ -45,6 +45,6 @@ router.get('/getstate',auth, checkRole(["admin","sales_manager","super_sales_man
 router.get('/getstate/:state',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getStateDashboard)
 router.get('/branch/:branchId',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getBranchDashboard)
 router.get('/dashboard/item/:itemId',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getItemDashboard )
-router.get('/invoice/:id',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getInvoicePDF )
+router.get('/invoice/:invoice_no',auth, checkRole(["admin","sales_manager","super_sales_manager"]),salemanager.getInvoicePDF )
 
 module.exports=router;

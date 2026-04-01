@@ -17,33 +17,33 @@ const checkRole = require("../../middleware/role");
 router.get(
   "/locations",
   auth,
-  checkRole(["stock_manager","super_stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager","super_inventory_manager"]),
   getStockLocations
 );
 
 router.get(
   "/state",
   auth,
-  checkRole(["stock_manager","super_stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager","super_inventory_manager"]),
   getStateWiseStock
 );
 
 router.get(
   "/state-graph",
   auth,
-  checkRole(["stock_manager","super_stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager","super_inventory_manager"]),
   getFullDashboard
 );
 router.get(
   "/city/:state/cities",
   auth,
-  checkRole(["stock_manager","super_stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager","super_inventory_manager"]),
   getCitiesByState
 );
 router.get(
   "/locations/:location",
   auth,
-  checkRole(["stock_manager","super_stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager","super_inventory_manager"]),
   getBranchesByLocation
 );
 
@@ -52,7 +52,7 @@ router.get(
 router.get(
   "/branchs/:branchId",
   auth,
-  checkRole(["stock_manager","super_stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager","super_inventory_manager"]),
   getBranchDashboard
 );
 

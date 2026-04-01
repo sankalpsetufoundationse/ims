@@ -17,7 +17,7 @@ const {
   getReportsAnalyticsDashboard,
   getCompleteDashboard,
   addStockItem,
-  getAllStatesDashboard,getStateDetailsDashboard,getBranchDetailsDashboard,getItemFullDetails,getCityBranchDashboard
+  getAllStatesDashboard,getStateDetailsDashboard,getBranchDetailsDashboard,getItemFullDetails,getCityBranchDashboard,getClientLedgerByBranch
 } = require("../../controllers/sqlbase/combine/combinemanager");
 
 const auth = require("../../middleware/auth");
@@ -180,4 +180,14 @@ router.get(
   ]),
   getCityBranchDashboard
 );
+router.get('/ledger/client/:clientId',   auth,
+  checkRole([
+    "super_stock_manager",
+    "super_admin",
+    "super_sales_manager",
+    "inventory_manager",
+    "super_inventory_manager",
+    
+    "admin"
+  ]), getClientLedgerByBranch);
 module.exports = router;
