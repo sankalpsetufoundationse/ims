@@ -5,8 +5,7 @@ const { Op, fn, col, where } = require("sequelize");
 
 const { User, Role, Branch,Notification,
   PasswordReset,
-  RecentActivity } = require("../../model/SQL_Model");
-
+  RecentActivity, SecurityActivity } = require("../../model/SQL_Model");
 
 
 
@@ -124,8 +123,25 @@ exports.login = async (req, res) => {
     }
 
     // ✅ UPDATE LAST LOGIN
+    const loginTime = new Date();
+
+    // UPDATE LAST LOGIN
     await user.update({
-      last_login: new Date()
+      last_login: loginTime
+    });
+
+    // SAVE SECURITY ACTIVITY
+    await SecurityActivity.create({
+      user_id: user.id,
+      activity_type: "login",
+      device_name: req.headers["user-agent"] || "Unknown Device",
+      ip_address:
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.socket?.remoteAddress ||
+        req.ip ||
+        null,
+      location: "India",
+      logged_in_at: loginTime
     });
 
     // ✅ TOKEN
@@ -156,7 +172,6 @@ exports.login = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 
 function generateOTP(length = 6) {
   let otp = "";

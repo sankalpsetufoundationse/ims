@@ -1,7 +1,8 @@
 const { QueryTypes, Op } = require("sequelize");
 const sequelize = require("../../../config/sqlcon");
 const Stock = require("../../../model/SQL_Model/stock.record")
-const { Branch } = require("../../../model/SQL_Model");
+const { Branch, Ledger} = require("../../../model/SQL_Model");
+const { ClientLedger, Client } = require("../../../model/SQL_Model");
 
 // ============================
 // INVENTORY DASHBOARD
@@ -1468,6 +1469,35 @@ exports.getCompleteDashboard = async (req, res) => {
   }
 };
 
+//client k hisab s ladger
+exports.getClientLedgerByBranch = async (req, res) => {
+  try {
+    const branchId = req.user.branch_id;
+    const clientId = req.params.clientId;
+
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: "Client ID is required" });
+    }
+
+    const ledgerData = await ClientLedger.findAll({
+      where: {
+        branch_id: branchId,
+        client_id: clientId
+      },
+      order: [["createdAt", "DESC"]],
+      attributes: ["id","invoice_no","type","amount","remark","createdAt"],
+      include: [{ model: Client, as: "client", attributes: ["id","name"] }]
+    });
+
+    if (ledgerData.length === 0) {
+      return res.status(404).json({ success: false, message: "No ledger entries found for this client in your branch" });
+    }
+
+    res.json({ success: true, totalEntries: ledgerData.length, data: ledgerData });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
 exports.getAllStatesDashboard = async (req, res) => {
   try {

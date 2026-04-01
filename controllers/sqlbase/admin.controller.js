@@ -991,6 +991,7 @@ exports.getAllUsersForDashboard = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
 exports.toggleUserStatus = async (req, res) => {
   try {
     const { id } = req.params;
